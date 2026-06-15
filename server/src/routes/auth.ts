@@ -9,16 +9,14 @@ import { authenticate } from '../middleware/auth.js';
 
 const router = Router();
 
-// Passport Google Strategy
-console.log("GOOGLE_CLIENT_ID =", env.GOOGLE_CLIENT_ID);
-console.log("GOOGLE_CLIENT_SECRET =", env.GOOGLE_CLIENT_SECRET);
-console.log("GOOGLE_CALLBACK_URL =", env.GOOGLE_CALLBACK_URL);
+// Passport Google Strategy (stateless — no session serialization needed)
 passport.use(
   new GoogleStrategy(
     {
       clientID: env.GOOGLE_CLIENT_ID,
       clientSecret: env.GOOGLE_CLIENT_SECRET,
       callbackURL: env.GOOGLE_CALLBACK_URL,
+      passReqToCallback: false,
     },
     async (accessToken: string, refreshToken: string, profile: any, done: any) => {
       try {
@@ -43,18 +41,7 @@ passport.use(
   )
 );
 
-passport.serializeUser((user: any, done) => {
-  done(null, user.id);
-});
-
-passport.deserializeUser(async (id: string, done) => {
-  try {
-    const user = await User.findById(id);
-    done(null, user);
-  } catch (error) {
-    done(error);
-  }
-});
+// No serializeUser / deserializeUser — we use JWT, not sessions.
 
 function generateAccessToken(user: IUser): string {
   return jwt.sign({ id: user._id.toString(), email: user.email }, env.JWT_SECRET, {
@@ -186,18 +173,32 @@ router.get('/me', authenticate, async (req: Request, res: Response) => {
   }
 });
 
-router.get('/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
+// Step 1: Redirect user to Google's OAuth consent screen
+router.get(
+  '/google',
+  passport.authenticate('google', {
+    scope: ['profile', 'email'],
+    session: false,
+  })
+);
 
+// Step 2: Google redirects back here with the authorization code
+//         session:false prevents Passport from trying to use sessions
 router.get(
   '/google/callback',
-  passport.authenticate('google', { failureRedirect: '/login?error=google_failed' }),
+  passport.authenticate('google', {
+    failureRedirect: 'http://localhost:5173/login?error=google_failed',
+    session: false,
+  }),
   (req: Request, res: Response) => {
-    const user = req.user as any;
+    // req.user is set by Passport's strategy callback (the IUser document)
+    const user = req.user as IUser;
     const accessToken = generateAccessToken(user);
     const refreshToken = generateRefreshToken(user);
 
     setTokenCookies(res, accessToken, refreshToken);
 
+    // Redirect to frontend — cookies are set, user is authenticated
     res.redirect('http://localhost:5173');
   }
 );

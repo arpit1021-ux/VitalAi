@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Plus, X, ArrowRight, ArrowLeft, Check } from 'lucide-react';
+import { Plus, X, ArrowRight, ArrowLeft, Check, Pencil } from 'lucide-react';
 import { useProfileStore } from '@/stores/profileStore';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -106,15 +106,37 @@ export default function ProfileSetupPage() {
           {profiles.map((profile) => (
             <motion.div key={profile._id} whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
               <Card
-                className="cursor-pointer text-center hover:border-primary/50 transition-colors"
-                onClick={() => {
-                  setActiveProfile(profile);
-                  navigate('/');
-                }}
+                className="cursor-pointer text-center hover:border-primary/50 transition-colors relative group"
               >
                 <CardContent className="p-6">
-                  <span className="text-4xl block mb-3">{profile.avatar}</span>
-                  <p className="font-medium text-text-primary">{profile.name}</p>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      navigate(`/profile/edit?id=${profile._id}`);
+                    }}
+                    className="absolute top-2 right-2 p-1.5 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity hover:bg-surface"
+                    aria-label={`Edit ${profile.name}'s profile`}
+                  >
+                    <Pencil className="h-3.5 w-3.5 text-text-muted" />
+                  </button>
+                  <div
+                    onClick={() => {
+                      setActiveProfile(profile);
+                      navigate('/');
+                    }}
+                    className="cursor-pointer"
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        setActiveProfile(profile);
+                        navigate('/');
+                      }
+                    }}
+                  >
+                    <span className="text-4xl block mb-3">{profile.avatar}</span>
+                    <p className="font-medium text-text-primary">{profile.name}</p>
+                  </div>
                 </CardContent>
               </Card>
             </motion.div>

@@ -4,6 +4,10 @@ declare module 'lucide-react' {
   export const Heart: Icon;
   export const Mail: Icon;
   export const Lock: Icon;
+  export const Settings: Icon;
+  export const Eye: Icon;
+  export const EyeOff: Icon;
+  export const Pencil: Icon;
   export const Loader2: Icon;
   export const Plus: Icon;
   export const X: Icon;
