@@ -56,8 +56,8 @@ export const chat = {
   getSessions: (profileId: string) =>
     api.get(`/chat/sessions/${profileId}`),
   getSession: (id: string) => api.get(`/chat/session/${id}`),
-  sendMessage: (sessionId: string, content: string) =>
-    api.post('/chat/message', { sessionId, content }),
+  sendMessage: (sessionId: string, content: string, language?: string) =>
+    api.post('/chat/message', { sessionId, content, language }),
   deleteSession: (id: string) => api.delete(`/chat/session/${id}`),
 };
 
@@ -66,8 +66,8 @@ export const pantry = {
   getAll: (profileId: string) => api.get(`/pantry/${profileId}`),
   update: (id: string, data: any) => api.put(`/pantry/${id}`, data),
   delete: (id: string) => api.delete(`/pantry/${id}`),
-  generateRecipes: (profileId: string) =>
-    api.post('/pantry/recipes', { profileId }),
+  generateRecipes: (profileId: string, scope: 'me' | 'family' = 'me', selectedItemIds?: string[]) =>
+    api.post('/pantry/recipes', { profileId, scope, selectedItemIds }),
 };
 
 export const insights = {
@@ -83,11 +83,54 @@ export const dashboard = {
 export const dailylog = {
   getToday: (profileId: string) => api.get(`/dailylog/${profileId}/today`),
   updateWater: (profileId: string, count: number) => api.put(`/dailylog/${profileId}/water`, { count }),
-  updatePlate: (profileId: string, group: string, value: boolean) => api.put(`/dailylog/${profileId}/plate`, { group, value }),
+  updatePlate: (profileId: string, group: string, value: boolean, entry?: string) =>
+    api.put(`/dailylog/${profileId}/plate`, { group, value, entry }),
   updateChallenge: (profileId: string, completed: boolean) => api.put(`/dailylog/${profileId}/challenge`, { completed }),
   getStreak: (profileId: string) => api.get(`/dailylog/${profileId}/streak`),
   getTips: (profileId: string) => api.get(`/dailylog/${profileId}/tips`),
   markActivity: (profileId: string) => api.post(`/dailylog/${profileId}/activity`),
+  addWater: (profileId: string) => api.post(`/dailylog/${profileId}/water/add`),
+  removeWater: (profileId: string) => api.post(`/dailylog/${profileId}/water/remove`),
+  setWaterGoal: (profileId: string, goal: number) => api.put(`/dailylog/${profileId}/water/goal`, { goal }),
+};
+
+export const dashboardExtended = {
+  getTimeline: (profileId: string) => api.get(`/dashboard/timeline/${profileId}`),
+  getCoach: (profileId: string) => api.get(`/dashboard/coach/${profileId}`),
+  getRecipes: (profileId: string) => api.get(`/dashboard/recipes/${profileId}`),
+  getMoreRecipes: (profileId: string, excludeNames: string[]) =>
+    api.post(`/dashboard/recipes/${profileId}/more`, { excludeNames }),
+};
+
+export const healthScore = {
+  get: (profileId: string) => api.get(`/health-score/${profileId}`),
+};
+
+export const healthInsights = {
+  get: (profileId: string) => api.get(`/health-insights/${profileId}`),
+  generate: (profileId: string) => api.post(`/health-insights/${profileId}/generate`),
+};
+
+export const scansExtended = {
+  getHistoryFiltered: (profileId: string, params: { type?: string; search?: string; sort?: string; page?: number; limit?: number }) =>
+    api.get(`/scans/history/${profileId}`, { params }),
+  deleteScan: (id: string) => api.delete(`/scans/history/${id}`),
+};
+
+export const savedRecipes = {
+  getAll: (profileId: string, params?: { diet?: string; search?: string; sort?: string }) =>
+    api.get(`/saved-recipes/${profileId}`, { params }),
+  save: (data: any) => api.post('/saved-recipes', data),
+  delete: (id: string) => api.delete(`/saved-recipes/${id}`),
+};
+
+export const community = {
+  getFeed: (params?: { sort?: string; page?: number; limit?: number }) =>
+    api.get('/community/feed', { params }),
+  createPost: (data: any) => api.post('/community', data),
+  toggleLike: (id: string) => api.post(`/community/${id}/like`),
+  deletePost: (id: string) => api.delete(`/community/${id}`),
+  getMyPosts: () => api.get('/community/my-posts'),
 };
 
 export default api;

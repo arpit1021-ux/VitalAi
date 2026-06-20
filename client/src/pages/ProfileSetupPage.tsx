@@ -1,25 +1,27 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Plus, X, ArrowRight, ArrowLeft, Check, Pencil } from 'lucide-react';
+import { Plus, X, ArrowRight, ArrowLeft, Check, Pencil, Trash2 } from 'lucide-react';
 import { useProfileStore } from '@/stores/profileStore';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
 const avatarEmojis = ['🍎', '💪', '🧘', '🏃‍♀️', '🧠', '❤️', '🥗', '💊', '🩺', '🥦', '🏋️', '🚴', '🧑‍⚕️', '🫀', '🦷', '🌙', '☀️', '🫁', '🦴', '👁️'];
 
-const allergyOptions = ['Nuts', 'Gluten', 'Dairy', 'Soy', 'Shellfish', 'Eggs', 'Peanuts', 'Fish'];
+const presetAllergies = ['Nuts', 'Gluten', 'Dairy', 'Soy', 'Shellfish', 'Eggs', 'Peanuts', 'Fish', 'Wheat', 'Sesame'];
 const conditionOptions = ['Diabetes', 'Hypertension', 'PCOS', 'Thyroid', 'Heart Disease', 'Kidney Disease', 'Asthma', 'Arthritis'];
-const dietOptions = ['vegetarian', 'vegan', 'non-veg', 'jain', 'keto', 'diabetic-friendly'];
+const dietOptions = ['vegetarian', 'vegan', 'eggetarian', 'non-veg', 'jain', 'keto', 'diabetic-friendly'];
 const fitnessOptions = ['weight-loss', 'muscle-gain', 'maintenance', 'endurance'];
 const activityOptions = ['sedentary', 'lightly-active', 'active', 'very-active'];
 
 export default function ProfileSetupPage() {
   const navigate = useNavigate();
-  const { profiles, addProfile, setActiveProfile } = useProfileStore();
+  const { profiles, addProfile, removeProfile, setActiveProfile } = useProfileStore();
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
+  const [allergyInput, setAllergyInput] = useState('');
   const [step, setStep] = useState(1);
   const [form, setForm] = useState({
     name: '',
@@ -28,31 +30,37 @@ export default function ProfileSetupPage() {
     avatar: '🍎',
     dietType: 'vegetarian',
     allergies: [] as string[],
-    customAllergy: '',
     conditions: [] as string[],
-    customCondition: '',
     medications: [] as { name: string; dosage: string }[],
     fitnessGoal: 'maintenance',
-    activityLevel: 'moderately-active',
+    activityLevel: 'lightly-active',
   });
 
-  const toggleChip = (field: 'allergies' | 'conditions', value: string) => {
+  const toggleCondition = (value: string) => {
     setForm((prev) => ({
       ...prev,
-      [field]: prev[field].includes(value)
-        ? prev[field].filter((v) => v !== value)
-        : [...prev[field], value],
+      conditions: prev.conditions.includes(value)
+        ? prev.conditions.filter((v) => v !== value)
+        : [...prev.conditions, value],
     }));
   };
 
-  const addCustomChip = (field: 'allergies' | 'conditions') => {
-    const customField = field === 'allergies' ? 'customAllergy' : 'customCondition';
-    if (form[customField].trim()) {
-      setForm((prev) => ({
-        ...prev,
-        [field]: [...prev[field], prev[customField].trim()],
-        [customField]: '',
-      }));
+  const addAllergy = (value: string) => {
+    const trimmed = value.trim();
+    if (trimmed && !form.allergies.includes(trimmed)) {
+      setForm((prev) => ({ ...prev, allergies: [...prev.allergies, trimmed] }));
+    }
+  };
+
+  const removeAllergy = (value: string) => {
+    setForm((prev) => ({ ...prev, allergies: prev.allergies.filter((a) => a !== value) }));
+  };
+
+  const handleAllergyKeyDown = (e: React.KeyboardEvent) => {
+    if ((e.key === 'Enter' || e.key === ',') && allergyInput.trim()) {
+      e.preventDefault();
+      addAllergy(allergyInput);
+      setAllergyInput('');
     }
   };
 
@@ -93,7 +101,17 @@ export default function ProfileSetupPage() {
       });
       navigate('/');
     } catch (e) {
+      alert('Failed to save profile. Please try again.');
     }
+  };
+
+  const handleDelete = async (profileId: string) => {
+    await removeProfile(profileId);
+    setShowDeleteConfirm(null);
+  };
+
+  const canDelete = (profileId: string) => {
+    return profiles.length > 1;
   };
 
   return (
@@ -105,20 +123,34 @@ export default function ProfileSetupPage() {
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 mb-8">
           {profiles.map((profile) => (
             <motion.div key={profile._id} whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
-              <Card
-                className="cursor-pointer text-center hover:border-primary/50 transition-colors relative group"
-              >
+              <Card className="cursor-pointer text-center hover:border-primary/50 transition-colors relative group">
                 <CardContent className="p-6">
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      navigate(`/profile/edit?id=${profile._id}`);
-                    }}
-                    className="absolute top-2 right-2 p-1.5 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity hover:bg-surface"
-                    aria-label={`Edit ${profile.name}'s profile`}
-                  >
-                    <Pencil className="h-3.5 w-3.5 text-text-muted" />
-                  </button>
+                  <div className="flex items-center justify-between mb-2">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        navigate(`/profile/edit?id=${profile._id}`);
+                      }}
+                      className="p-1 rounded-lg hover:bg-surface transition-colors"
+                      aria-label={`Edit ${profile.name}'s profile`}
+                    >
+                      <Pencil className="h-3.5 w-3.5 text-text-muted" />
+                    </button>
+                    {canDelete(profile._id) ? (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setShowDeleteConfirm(profile._id);
+                        }}
+                        className="p-1 rounded-lg hover:bg-danger/10 transition-colors"
+                        aria-label={`Delete ${profile.name}'s profile`}
+                      >
+                        <Trash2 className="h-3.5 w-3.5 text-danger" />
+                      </button>
+                    ) : (
+                      <div className="w-[23px]" />
+                    )}
+                  </div>
                   <div
                     onClick={() => {
                       setActiveProfile(profile);
@@ -136,6 +168,9 @@ export default function ProfileSetupPage() {
                   >
                     <span className="text-4xl block mb-3">{profile.avatar}</span>
                     <p className="font-medium text-text-primary">{profile.name}</p>
+                    <p className="text-xs text-text-muted mt-1">
+                      {profile.age ? `${profile.age} · ` : ''}{profile.dietType || 'No diet set'}
+                    </p>
                   </div>
                 </CardContent>
               </Card>
@@ -159,6 +194,31 @@ export default function ProfileSetupPage() {
         </div>
       </div>
 
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={!!showDeleteConfirm} onOpenChange={() => setShowDeleteConfirm(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Profile</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-text-muted">
+            This will permanently delete this profile and all their data. This action cannot be undone.
+          </p>
+          <div className="flex gap-3 mt-4">
+            <Button variant="outline" className="flex-1" onClick={() => setShowDeleteConfirm(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              className="flex-1"
+              onClick={() => showDeleteConfirm && handleDelete(showDeleteConfirm)}
+            >
+              Delete Profile
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Create Profile Dialog */}
       <Dialog open={showCreateModal} onOpenChange={setShowCreateModal}>
         <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader>
@@ -232,30 +292,36 @@ export default function ProfileSetupPage() {
               </div>
               <div className="space-y-2">
                 <label className="text-sm text-text-muted">Allergies</label>
-                <div className="flex flex-wrap gap-2">
-                  {allergyOptions.map((allergy) => (
-                    <button
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {form.allergies.map((allergy) => (
+                    <span
                       key={allergy}
-                      onClick={() => toggleChip('allergies', allergy)}
-                      className={`px-3 py-1.5 rounded-full text-sm transition-colors ${
-                        form.allergies.includes(allergy) ? 'bg-danger text-white' : 'bg-surface text-text-muted hover:text-text-primary'
-                      }`}
+                      className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm bg-danger/20 text-danger border border-danger/30"
                     >
                       {allergy}
+                      <button onClick={() => removeAllergy(allergy)} className="hover:text-danger/80" aria-label={`Remove ${allergy}`}>
+                        <X className="h-3 w-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {presetAllergies.filter((a) => !form.allergies.includes(a)).map((allergy) => (
+                    <button
+                      key={allergy}
+                      onClick={() => addAllergy(allergy)}
+                      className="px-3 py-1 rounded-full text-xs bg-surface text-text-muted hover:text-text-primary hover:border-text-muted/50 border border-border transition-colors"
+                    >
+                      + {allergy}
                     </button>
                   ))}
                 </div>
-                <div className="flex gap-2">
-                  <Input
-                    placeholder="Custom allergy"
-                    value={form.customAllergy}
-                    onChange={(e) => setForm((p) => ({ ...p, customAllergy: e.target.value }))}
-                    onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addCustomChip('allergies'))}
-                  />
-                  <Button variant="outline" size="icon" onClick={() => addCustomChip('allergies')}>
-                    <Plus className="h-4 w-4" />
-                  </Button>
-                </div>
+                <Input
+                  placeholder="Type allergen and press Enter"
+                  value={allergyInput}
+                  onChange={(e) => setAllergyInput(e.target.value)}
+                  onKeyDown={handleAllergyKeyDown}
+                />
               </div>
               <div className="space-y-2">
                 <label className="text-sm text-text-muted">Conditions</label>
@@ -263,7 +329,7 @@ export default function ProfileSetupPage() {
                   {conditionOptions.map((condition) => (
                     <button
                       key={condition}
-                      onClick={() => toggleChip('conditions', condition)}
+                      onClick={() => toggleCondition(condition)}
                       className={`px-3 py-1.5 rounded-full text-sm transition-colors ${
                         form.conditions.includes(condition) ? 'bg-warning text-black' : 'bg-surface text-text-muted hover:text-text-primary'
                       }`}
@@ -271,17 +337,6 @@ export default function ProfileSetupPage() {
                       {condition}
                     </button>
                   ))}
-                </div>
-                <div className="flex gap-2">
-                  <Input
-                    placeholder="Custom condition"
-                    value={form.customCondition}
-                    onChange={(e) => setForm((p) => ({ ...p, customCondition: e.target.value }))}
-                    onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addCustomChip('conditions'))}
-                  />
-                  <Button variant="outline" size="icon" onClick={() => addCustomChip('conditions')}>
-                    <Plus className="h-4 w-4" />
-                  </Button>
                 </div>
               </div>
               <div className="flex gap-3">

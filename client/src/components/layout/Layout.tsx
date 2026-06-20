@@ -4,8 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   LayoutDashboard,
   ScanLine,
-  Pill,
-  FlaskConical,
+  ChefHat,
   Bot,
   Package,
   Users,
@@ -21,12 +20,11 @@ import SignInModal from '@/components/shared/SignInModal';
 
 const navItems = [
   { icon: LayoutDashboard, label: 'Dashboard', path: '/' },
-  { icon: ScanLine, label: 'Food Scanner', path: '/scanner' },
-  { icon: Pill, label: 'Medicine Checker', path: '/medicine' },
-  { icon: FlaskConical, label: 'Supplements', path: '/supplements' },
+  { icon: ScanLine, label: 'Scan & Verdict', path: '/scanner' },
+  { icon: ChefHat, label: 'Recipes & List', path: '/recipes' },
+  { icon: Package, label: 'Inventory', path: '/pantry' },
+  { icon: Users, label: 'Community', path: '/community' },
   { icon: Bot, label: 'VitalBot', path: '/chat' },
-  { icon: Package, label: 'Smart Pantry', path: '/pantry' },
-  { icon: Users, label: 'Family Insights', path: '/insights' },
 ];
 
 const dropdownVariants = {
@@ -139,13 +137,25 @@ export function Navbar() {
                   <button
                     onClick={() => {
                       setShowProfileMenu(false);
+                      navigate('/select-profile');
+                    }}
+                    className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-text-muted hover:bg-surface hover:text-text-primary text-sm transition-colors"
+                    role="menuitem"
+                  >
+                    <Settings className="h-4 w-4" aria-hidden="true" />
+                    Switch Profile
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setShowProfileMenu(false);
                       navigate('/profile-setup');
                     }}
                     className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-text-muted hover:bg-surface hover:text-text-primary text-sm transition-colors"
                     role="menuitem"
                   >
                     <Settings className="h-4 w-4" aria-hidden="true" />
-                    Manage Profile
+                    Manage Profiles
                   </button>
                 </motion.div>
               )}
@@ -166,7 +176,7 @@ export function Navbar() {
             </Button>
           </div>
         ) : (
-          <Button size="sm" onClick={() => navigate('/login')} aria-label="Sign in">
+          <Button size="sm" variant="outline" onClick={() => navigate('/login')} className="rounded-full px-5" aria-label="Sign in">
             Sign In
           </Button>
         )}
@@ -194,12 +204,9 @@ export function Sidebar() {
   const SidebarContent = () => (
     <div className="flex flex-col h-full bg-surface/80 backdrop-blur-xl border-r border-border w-64">
       <div className="p-6">
-        <Link
-          to="/"
-          className="text-2xl font-bold text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 rounded-lg -ml-2 pl-2"
-          aria-label="VitalAI Home"
-        >
-          VitalAI
+        <Link to="/" className="block" aria-label="VitalAI Home">
+          <span className="text-2xl font-bold text-primary">VitalAI</span>
+          <p className="text-xs text-text-muted mt-1">Your AI health companion</p>
         </Link>
       </div>
       <nav className="flex-1 px-3 space-y-1" role="navigation" aria-label="Main navigation">

@@ -11,7 +11,7 @@ const avatarEmojis = ['🍎', '💪', '🧘', '🏃‍♀️', '🧠', '❤️',
 
 const allergyOptions = ['Nuts', 'Gluten', 'Dairy', 'Soy', 'Shellfish', 'Eggs', 'Peanuts', 'Fish'];
 const conditionOptions = ['Diabetes', 'Hypertension', 'PCOS', 'Thyroid', 'Heart Disease', 'Kidney Disease', 'Asthma', 'Arthritis'];
-const dietOptions = ['vegetarian', 'vegan', 'non-veg', 'jain', 'keto', 'diabetic-friendly'];
+const dietOptions = ['vegetarian', 'vegan', 'eggetarian', 'non-veg', 'jain', 'keto', 'diabetic-friendly'];
 const fitnessOptions = ['weight-loss', 'muscle-gain', 'maintenance', 'endurance'];
 const activityOptions = ['sedentary', 'lightly-active', 'active', 'very-active'];
 
@@ -122,6 +122,7 @@ export default function EditProfilePage() {
       });
       navigate('/');
     } catch {
+      alert('Failed to save profile. Please try again.');
     } finally {
       setSaving(false);
     }

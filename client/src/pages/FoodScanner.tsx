@@ -1,10 +1,11 @@
 import { useState, useRef, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Camera, Upload, Type, Loader2, RotateCcw } from 'lucide-react';
+import { Camera, Upload, Type, Loader2, RotateCcw, Package, Bot, AlertTriangle } from 'lucide-react';
 import { useMutation } from '@tanstack/react-query';
 import { createWorker } from 'tesseract.js';
 import { useProfileStore } from '@/stores/profileStore';
-import { scans } from '@/lib/api';
+import { scans, pantry } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
@@ -14,32 +15,56 @@ import { CitationsBar } from '@/components/shared/CitationsBar';
 import { DisclaimerBanner } from '@/components/shared/DisclaimerBanner';
 
 export default function FoodScanner() {
+  const navigate = useNavigate();
   const { activeProfile } = useProfileStore();
   const [extractedText, setExtractedText] = useState('');
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [ocrLoading, setOcrLoading] = useState(false);
   const [inputMode, setInputMode] = useState<'text' | 'upload'>('text');
+  const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [cameraActive, setCameraActive] = useState(false);
+  const [addedToInventory, setAddedToInventory] = useState(false);
 
   const { mutate: analyze, data: result, isPending, reset } = useMutation({
     mutationFn: () => scans.scanFood(extractedText, activeProfile!._id, imageFile || undefined),
-    onSuccess: (res) => {},
+    onSuccess: () => {
+      setError(null);
+      setAddedToInventory(false);
+    },
+    onError: () => {
+      setError('AI analysis failed. Please try again.');
+    },
+  });
+
+  const { mutate: addToInventory, isPending: addingToInventory } = useMutation({
+    mutationFn: () => {
+      const productName = extractedText.split('\n')[0]?.trim() || 'Scanned food item';
+      return pantry.create({
+        profileId: activeProfile!._id,
+        name: productName.slice(0, 100),
+        quantity: 1,
+        unit: 'pack',
+      });
+    },
+    onSuccess: () => setAddedToInventory(true),
   });
 
   const handleFileUpload = async (file: File) => {
     setImageFile(file);
     setImagePreview(URL.createObjectURL(file));
     setOcrLoading(true);
+    setError(null);
     try {
       const worker = await createWorker('eng');
       const { data: { text } } = await worker.recognize(file);
       setExtractedText(text);
       await worker.terminate();
     } catch (e) {
+      setError('Failed to extract text from image. Try uploading a clearer photo.');
     } finally {
       setOcrLoading(false);
     }
@@ -54,6 +79,7 @@ export default function FoodScanner() {
         setCameraActive(true);
       }
     } catch (e) {
+      setError('Camera access denied. Please allow camera permissions or upload an image instead.');
     }
   };
 
@@ -89,7 +115,15 @@ export default function FoodScanner() {
     setImagePreview(null);
     setImageFile(null);
     setCameraActive(false);
+    setError(null);
+    setAddedToInventory(false);
     reset();
+  };
+
+  const handleAskVitalBot = () => {
+    const productName = extractedText.split('\n')[0]?.trim() || 'food item';
+    const verdict = result?.data?.verdict?.verdict || 'unknown';
+    navigate(`/chat?context=${encodeURIComponent(`I just scanned "${productName}" and got a ${verdict} verdict. Can you tell me more about this product?`)}`);
   };
 
   return (
@@ -170,6 +204,12 @@ export default function FoodScanner() {
                       <Loader2 className="h-4 w-4 animate-spin" /> Extracting text...
                     </div>
                   )}
+                  {error && (
+                    <div className="flex items-center gap-2 p-3 rounded-lg bg-danger/10 text-danger text-sm">
+                      <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+                      {error}
+                    </div>
+                  )}
                 </>
               )}
 
@@ -185,8 +225,15 @@ export default function FoodScanner() {
                 />
               </div>
 
+              {inputMode === 'text' && error && (
+                <div className="flex items-center gap-2 p-3 rounded-lg bg-danger/10 text-danger text-sm">
+                  <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+                  {error}
+                </div>
+              )}
+
               <Button
-                onClick={() => analyze()}
+                onClick={() => { setError(null); analyze(); }}
                 disabled={!extractedText.trim() || isPending || !activeProfile}
                 className="w-full"
               >
@@ -210,17 +257,17 @@ export default function FoodScanner() {
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
           <Card>
             <CardContent className="p-6 text-center">
-              <VerdictBadge verdict={result.data?.verdict || 'safe'} />
-              <p className="mt-4 text-text-primary leading-relaxed">{result.data?.summary}</p>
+              <VerdictBadge verdict={result.data?.verdict?.verdict || 'safe'} />
+              <p className="mt-4 text-text-primary leading-relaxed">{result.data?.verdict?.summary}</p>
             </CardContent>
           </Card>
 
-          {result.data?.flaggedIngredients?.length > 0 && (
+          {result.data?.verdict?.flagged_ingredients?.length > 0 && (
             <Card>
               <CardHeader><CardTitle>Flagged Ingredients</CardTitle></CardHeader>
               <CardContent>
                 <div className="flex flex-wrap gap-2">
-                  {result.data.flaggedIngredients.map((ing: any, i: number) => (
+                  {result.data.verdict.flagged_ingredients.map((ing: any, i: number) => (
                     <IngredientPill key={i} name={ing.name} reason={ing.reason} severity={ing.severity} flagged />
                   ))}
                 </div>
@@ -228,33 +275,57 @@ export default function FoodScanner() {
             </Card>
           )}
 
-          {result.data?.positiveNutrients?.length > 0 && (
+          {result.data?.verdict?.positive_nutrients?.length > 0 && (
             <Card>
               <CardHeader><CardTitle>Positive Nutrients</CardTitle></CardHeader>
               <CardContent>
                 <div className="flex flex-wrap gap-2">
-                  {result.data.positiveNutrients.map((n: any, i: number) => (
-                    <IngredientPill key={i} name={n.name} reason={n.reason} />
+                  {result.data.verdict.positive_nutrients.map((n: any, i: number) => (
+                    <IngredientPill key={i} name={n.name} reason={n.benefit} />
                   ))}
                 </div>
               </CardContent>
             </Card>
           )}
 
-          {result.data?.recommendation && (
+          {result.data?.verdict?.recommendation && (
             <Card>
               <CardContent className="p-6">
-                <p className="text-sm text-text-primary leading-relaxed">{result.data.recommendation}</p>
+                <p className="text-sm text-text-primary leading-relaxed">{result.data.verdict.recommendation}</p>
               </CardContent>
             </Card>
           )}
 
-          <CitationsBar sources={result.data?.sources || []} />
+          <CitationsBar sources={result.data?.verdict?.sources_used || []} />
           <DisclaimerBanner />
 
-          <Button variant="outline" onClick={resetAll} className="w-full">
-            <RotateCcw className="h-4 w-4 mr-2" /> Scan Another
-          </Button>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <Button
+              variant="outline"
+              onClick={() => addToInventory()}
+              disabled={addingToInventory || addedToInventory}
+              className="gap-2"
+            >
+              {addingToInventory ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : addedToInventory ? (
+                <Package className="h-4 w-4 text-primary" />
+              ) : (
+                <Package className="h-4 w-4" />
+              )}
+              {addedToInventory ? 'Added!' : 'Add to Inventory'}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={handleAskVitalBot}
+              className="gap-2"
+            >
+              <Bot className="h-4 w-4" /> Ask VitalBot
+            </Button>
+            <Button variant="outline" onClick={resetAll} className="gap-2">
+              <RotateCcw className="h-4 w-4" /> Scan Another
+            </Button>
+          </div>
         </motion.div>
       )}
     </div>

@@ -20,6 +20,7 @@ interface ProfileState {
   profiles: Profile[];
   activeProfile: Profile | null;
   isLoading: boolean;
+  hasSelectedProfile: boolean;
   fetchProfiles: () => Promise<void>;
   setActiveProfile: (profile: Profile) => void;
   addProfile: (data: any) => Promise<void>;
@@ -31,27 +32,32 @@ export const useProfileStore = create<ProfileState>((set, get) => ({
   profiles: [],
   activeProfile: null,
   isLoading: false,
+  hasSelectedProfile: false,
   fetchProfiles: async () => {
     set({ isLoading: true });
     try {
       const res = await profilesApi.getAll();
       const profiles = res.data.profiles || res.data;
-      set({ profiles, isLoading: false });
       const savedId = localStorage.getItem('activeProfileId');
-      if (savedId) {
-        const found = profiles.find((p: Profile) => p._id === savedId);
-        if (found) set({ activeProfile: found });
-      }
-      if (!get().activeProfile && profiles.length > 0) {
-        set({ activeProfile: profiles[0] });
-        localStorage.setItem('activeProfileId', profiles[0]._id);
+      const hasSaved = !!savedId && profiles.some((p: Profile) => p._id === savedId);
+      const found = hasSaved ? profiles.find((p: Profile) => p._id === savedId) : null;
+
+      set({
+        profiles,
+        isLoading: false,
+        hasSelectedProfile: hasSaved,
+        activeProfile: found || null,
+      });
+
+      if (found) {
+        localStorage.setItem('activeProfileId', found._id);
       }
     } catch {
       set({ isLoading: false });
     }
   },
   setActiveProfile: (profile) => {
-    set({ activeProfile: profile });
+    set({ activeProfile: profile, hasSelectedProfile: true });
     localStorage.setItem('activeProfileId', profile._id);
   },
   addProfile: async (data) => {

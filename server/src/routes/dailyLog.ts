@@ -86,6 +86,80 @@ router.put('/:profileId/water', async (req: Request, res: Response) => {
   }
 });
 
+router.post('/:profileId/water/add', async (req: Request, res: Response) => {
+  try {
+    const profile = await Profile.findOne({
+      _id: req.params.profileId,
+      userId: (req as any).jwtUser!.id,
+    });
+    if (!profile) {
+      res.status(404).json({ error: 'Profile not found' });
+      return;
+    }
+
+    const log = await getOrCreateTodayLog(req.params.profileId);
+    const goal = log.waterGoal || 8;
+    if (log.waterCount < goal) {
+      log.waterCount += 1;
+      await log.save();
+    }
+
+    res.json(log);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to add water' });
+  }
+});
+
+router.post('/:profileId/water/remove', async (req: Request, res: Response) => {
+  try {
+    const profile = await Profile.findOne({
+      _id: req.params.profileId,
+      userId: (req as any).jwtUser!.id,
+    });
+    if (!profile) {
+      res.status(404).json({ error: 'Profile not found' });
+      return;
+    }
+
+    const log = await getOrCreateTodayLog(req.params.profileId);
+    if (log.waterCount > 0) {
+      log.waterCount -= 1;
+      await log.save();
+    }
+
+    res.json(log);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to remove water' });
+  }
+});
+
+router.put('/:profileId/water/goal', async (req: Request, res: Response) => {
+  try {
+    const profile = await Profile.findOne({
+      _id: req.params.profileId,
+      userId: (req as any).jwtUser!.id,
+    });
+    if (!profile) {
+      res.status(404).json({ error: 'Profile not found' });
+      return;
+    }
+
+    const { goal } = req.body;
+    if (typeof goal !== 'number' || goal < 1 || goal > 20) {
+      res.status(400).json({ error: 'Goal must be a number between 1 and 20' });
+      return;
+    }
+
+    const log = await getOrCreateTodayLog(req.params.profileId);
+    log.waterGoal = goal;
+    await log.save();
+
+    res.json(log);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to set water goal' });
+  }
+});
+
 router.put('/:profileId/plate', async (req: Request, res: Response) => {
   try {
     const profile = await Profile.findOne({
@@ -97,7 +171,7 @@ router.put('/:profileId/plate', async (req: Request, res: Response) => {
       return;
     }
 
-    const { group, value } = req.body;
+    const { group, value, entry } = req.body;
     const validGroups = ['veg', 'fruit', 'protein', 'grains', 'dairy'];
     if (!validGroups.includes(group)) {
       res.status(400).json({ error: 'Invalid plate group' });
@@ -106,6 +180,16 @@ router.put('/:profileId/plate', async (req: Request, res: Response) => {
 
     const log = await getOrCreateTodayLog(req.params.profileId);
     log.plateGroups[group as keyof typeof log.plateGroups] = value;
+
+    if (!log.plateEntries) {
+      log.plateEntries = {} as any;
+    }
+    if (value && entry) {
+      (log.plateEntries as any)[group] = entry;
+    } else if (!value) {
+      (log.plateEntries as any)[group] = undefined;
+    }
+
     await log.save();
 
     res.json(log);

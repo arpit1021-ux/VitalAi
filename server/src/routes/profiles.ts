@@ -13,7 +13,7 @@ const createProfileSchema = z.object({
   age: z.number().optional(),
   gender: z.enum(['male', 'female', 'other']).optional(),
   avatar: z.string().optional(),
-  dietType: z.enum(['vegetarian', 'vegan', 'non-veg', 'jain', 'keto', 'diabetic-friendly']).optional(),
+  dietType: z.enum(['vegetarian', 'vegan', 'eggetarian', 'non-veg', 'jain', 'keto', 'diabetic-friendly']).optional(),
   allergies: z.array(z.string()).optional(),
   conditions: z.array(z.string()).optional(),
   medications: z.array(z.object({ name: z.string(), dosage: z.string() })).optional(),
@@ -84,7 +84,7 @@ router.put('/:id', async (req: Request, res: Response) => {
 
 router.delete('/:id', async (req: Request, res: Response) => {
   try {
-    const profile = await Profile.findOneAndDelete({
+    const profile = await Profile.findOne({
       _id: req.params.id,
       userId: (req as any).jwtUser!.id,
     });
@@ -92,6 +92,17 @@ router.delete('/:id', async (req: Request, res: Response) => {
       res.status(404).json({ error: 'Profile not found' });
       return;
     }
+
+    const profileCount = await Profile.countDocuments({ userId: (req as any).jwtUser!.id });
+    if (profileCount <= 1) {
+      res.status(400).json({ error: 'Cannot delete your only profile. Create another profile first.' });
+      return;
+    }
+
+    await Profile.findOneAndDelete({
+      _id: req.params.id,
+      userId: (req as any).jwtUser!.id,
+    });
 
     await User.findByIdAndUpdate((req as any).jwtUser!.id, {
       $pull: { profiles: profile._id },

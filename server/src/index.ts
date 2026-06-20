@@ -7,7 +7,7 @@ import passport from 'passport';
 
 import { env } from './config/env.js';
 import { connectDB } from './config/db.js';
-import { generalRateLimiter } from './middleware/rateLimiter.js';
+import { generalRateLimiter, aiRateLimiter } from './middleware/rateLimiter.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
 import authRoutes from './routes/auth.js';
@@ -18,6 +18,10 @@ import pantryRoutes from './routes/pantry.js';
 import insightRoutes from './routes/insights.js';
 import dashboardRoutes from './routes/dashboard.js';
 import dailyLogRoutes from './routes/dailyLog.js';
+import healthScoreRoutes from './routes/healthScore.js';
+import healthInsightsRoutes from './routes/healthInsights.js';
+import savedRecipeRoutes from './routes/savedRecipes.js';
+import communityRoutes from './routes/community.js';
 
 const app = express();
 
@@ -35,12 +39,16 @@ app.use(passport.initialize());
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/profiles', profileRoutes);
-app.use('/api/scans', scanRoutes);
-app.use('/api/chat', chatRoutes);
+app.use('/api/scans', aiRateLimiter, scanRoutes);
+app.use('/api/chat', aiRateLimiter, chatRoutes);
 app.use('/api/pantry', pantryRoutes);
-app.use('/api/insights', insightRoutes);
+app.use('/api/insights', aiRateLimiter, insightRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/dailylog', dailyLogRoutes);
+app.use('/api/health-score', healthScoreRoutes);
+app.use('/api/health-insights', aiRateLimiter, healthInsightsRoutes);
+app.use('/api/saved-recipes', savedRecipeRoutes);
+app.use('/api/community', communityRoutes);
 
 // Health check
 app.get('/health', (req, res) => {

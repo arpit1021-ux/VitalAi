@@ -1,16 +1,19 @@
-import OpenAI from 'openai';
+import { GoogleGenAI } from '@google/genai';
 import { v4 as uuidv4 } from 'uuid';
 import { env } from '../config/env.js';
 import { getPineconeIndex } from '../config/pinecone.js';
 
-const openai = new OpenAI({ apiKey: env.OPENAI_API_KEY });
+const genAI = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY, apiVersion: 'v1' });
 
 export async function generateEmbedding(text: string): Promise<number[]> {
-  const response = await openai.embeddings.create({
-    model: 'text-embedding-3-small',
-    input: text,
+  const result = await genAI.models.embedContent({
+    model: 'gemini-embedding-001',
+    contents: text,
+    config: {
+      outputDimensionality: 1536,
+    },
   });
-  return response.data[0].embedding;
+  return result.embeddings?.[0]?.values ?? [];
 }
 
 export interface RAGResult {

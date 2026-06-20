@@ -7,6 +7,8 @@ export interface IScanHistory extends Document {
   extractedText?: string;
   aiVerdict?: Record<string, any>;
   sourcesUsed: string[];
+  ragUsed: boolean;
+  ragSourceCount: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -37,6 +39,14 @@ const scanHistorySchema = new Schema<IScanHistory>(
         type: String,
       },
     ],
+    ragUsed: {
+      type: Boolean,
+      default: false,
+    },
+    ragSourceCount: {
+      type: Number,
+      default: 0,
+    },
   },
   { timestamps: true }
 );

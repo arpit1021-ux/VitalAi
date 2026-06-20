@@ -46,21 +46,27 @@ export default function SupplementChecker() {
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [ocrLoading, setOcrLoading] = useState(false);
   const [inputMode, setInputMode] = useState<'text' | 'upload'>('text');
+  const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { mutate: analyze, data: result, isPending, reset } = useMutation({
     mutationFn: () => scans.scanSupplement(extractedText, activeProfile!._id),
+    onError: () => {
+      setError('AI analysis failed. Please try again.');
+    },
   });
 
   const handleFileUpload = async (file: File) => {
     setImagePreview(URL.createObjectURL(file));
     setOcrLoading(true);
+    setError(null);
     try {
       const worker = await createWorker('eng');
       const { data: { text } } = await worker.recognize(file);
       setExtractedText(text);
       await worker.terminate();
     } catch (e) {
+      setError('Failed to extract text from image. Please try again.');
     } finally {
       setOcrLoading(false);
     }
@@ -75,6 +81,7 @@ export default function SupplementChecker() {
   const resetAll = () => {
     setExtractedText('');
     setImagePreview(null);
+    setError(null);
     reset();
   };
 
@@ -128,6 +135,9 @@ export default function SupplementChecker() {
                       <Loader2 className="h-4 w-4 animate-spin" /> Extracting text...
                     </div>
                   )}
+                  {error && (
+                    <p className="text-sm text-danger">{error}</p>
+                  )}
                 </>
               )}
 
@@ -143,8 +153,15 @@ export default function SupplementChecker() {
                 />
               </div>
 
+              {inputMode === 'text' && error && (
+                <div className="flex items-center gap-2 p-3 rounded-lg bg-danger/10 text-danger text-sm">
+                  <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+                  {error}
+                </div>
+              )}
+
               <Button
-                onClick={() => analyze()}
+                onClick={() => { setError(null); analyze(); }}
                 disabled={!extractedText.trim() || isPending || !activeProfile}
                 className="w-full"
               >
@@ -168,14 +185,11 @@ export default function SupplementChecker() {
           <Card>
             <CardContent className="p-6 flex flex-col items-center">
               <p className="text-sm text-text-muted mb-4">Goal Alignment Score</p>
-              <ProgressRing score={result.data?.goal_alignment_score || 0} />
-              {result.data?.verdict && (
-                <p className="mt-4 text-sm font-medium text-text-primary">{result.data.verdict}</p>
-              )}
+              <ProgressRing score={result.data?.verdict?.goal_alignment_score || 0} />
             </CardContent>
           </Card>
 
-          {result.data?.ingredients?.length > 0 && (
+          {result.data?.verdict?.ingredient_breakdown?.length > 0 && (
             <Card>
               <CardHeader><CardTitle>Ingredient Breakdown</CardTitle></CardHeader>
               <CardContent>
@@ -184,18 +198,18 @@ export default function SupplementChecker() {
                     <thead>
                       <tr className="border-b border-border">
                         <th className="text-left py-2 text-text-muted">Ingredient</th>
-                        <th className="text-left py-2 text-text-muted">Amount</th>
-                        <th className="text-left py-2 text-text-muted">% DV</th>
-                        <th className="text-left py-2 text-text-muted">Notes</th>
+                        <th className="text-left py-2 text-text-muted">Dosage</th>
+                        <th className="text-left py-2 text-text-muted">Benefit</th>
+                        <th className="text-left py-2 text-text-muted">Concern</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {result.data.ingredients.map((ing: any, i: number) => (
+                      {result.data.verdict.ingredient_breakdown.map((ing: any, i: number) => (
                         <tr key={i} className="border-b border-border last:border-0">
                           <td className="py-2 text-text-primary">{ing.name}</td>
-                          <td className="py-2 text-text-muted">{ing.amount}</td>
-                          <td className="py-2 text-text-muted">{ing.percentDV || 'N/A'}</td>
-                          <td className="py-2 text-text-muted text-xs">{ing.notes}</td>
+                          <td className="py-2 text-text-muted">{ing.dosage}</td>
+                          <td className="py-2 text-text-muted">{ing.benefit}</td>
+                          <td className="py-2 text-text-muted text-xs">{ing.concern || 'None'}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -205,7 +219,7 @@ export default function SupplementChecker() {
             </Card>
           )}
 
-          {result.data?.bannedSubstances?.length > 0 && (
+          {result.data?.verdict?.banned_substance_flags?.length > 0 && (
             <Card className="border-danger/30">
               <CardHeader>
                 <CardTitle className="text-danger flex items-center gap-2">
@@ -214,10 +228,10 @@ export default function SupplementChecker() {
               </CardHeader>
               <CardContent>
                 <div className="space-y-2">
-                  {result.data.bannedSubstances.map((sub: string, i: number) => (
+                  {result.data.verdict.banned_substance_flags.map((sub: any, i: number) => (
                     <div key={i} className="flex items-center gap-2 p-2 rounded-lg bg-danger/10">
                       <AlertTriangle className="h-4 w-4 text-danger" />
-                      <span className="text-sm text-danger">{sub}</span>
+                      <span className="text-sm text-danger">{sub.substance}: {sub.reason}</span>
                     </div>
                   ))}
                 </div>
@@ -225,16 +239,16 @@ export default function SupplementChecker() {
             </Card>
           )}
 
-          {result.data?.protocol && (
+          {result.data?.verdict?.usage_protocol && (
             <Card>
               <CardHeader><CardTitle>Usage Protocol</CardTitle></CardHeader>
               <CardContent>
-                <p className="text-sm text-text-primary leading-relaxed">{result.data.protocol}</p>
+                <p className="text-sm text-text-primary leading-relaxed">{result.data.verdict.usage_protocol}</p>
               </CardContent>
             </Card>
           )}
 
-          <CitationsBar sources={result.data?.sources || []} />
+          <CitationsBar sources={result.data?.verdict?.sources_used || []} />
           <DisclaimerBanner />
 
           <Button variant="outline" onClick={resetAll} className="w-full">

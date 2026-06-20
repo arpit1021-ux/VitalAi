@@ -18,21 +18,27 @@ export default function MedicineChecker() {
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [ocrLoading, setOcrLoading] = useState(false);
   const [inputMode, setInputMode] = useState<'text' | 'upload'>('text');
+  const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { mutate: analyze, data: result, isPending, reset } = useMutation({
     mutationFn: () => scans.scanMedicine(extractedText, activeProfile!._id),
+    onError: () => {
+      setError('AI analysis failed. Please try again.');
+    },
   });
 
   const handleFileUpload = async (file: File) => {
     setImagePreview(URL.createObjectURL(file));
     setOcrLoading(true);
+    setError(null);
     try {
       const worker = await createWorker('eng');
       const { data: { text } } = await worker.recognize(file);
       setExtractedText(text);
       await worker.terminate();
     } catch (e) {
+      setError('Failed to extract text from image. Please try again.');
     } finally {
       setOcrLoading(false);
     }
@@ -47,6 +53,7 @@ export default function MedicineChecker() {
   const resetAll = () => {
     setExtractedText('');
     setImagePreview(null);
+    setError(null);
     reset();
   };
 
@@ -100,6 +107,9 @@ export default function MedicineChecker() {
                       <Loader2 className="h-4 w-4 animate-spin" /> Extracting text...
                     </div>
                   )}
+                  {error && (
+                    <p className="text-sm text-danger">{error}</p>
+                  )}
                 </>
               )}
 
@@ -115,8 +125,15 @@ export default function MedicineChecker() {
                 />
               </div>
 
+              {inputMode === 'text' && error && (
+                <div className="flex items-center gap-2 p-3 rounded-lg bg-danger/10 text-danger text-sm">
+                  <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+                  {error}
+                </div>
+              )}
+
               <Button
-                onClick={() => analyze()}
+                onClick={() => { setError(null); analyze(); }}
                 disabled={!extractedText.trim() || isPending || !activeProfile}
                 className="w-full"
               >
@@ -142,18 +159,15 @@ export default function MedicineChecker() {
               <CardTitle>Interaction Results</CardTitle>
             </CardHeader>
             <CardContent>
-              {result.data?.interactions?.length > 0 ? (
+              {result.data?.verdict?.interactions?.length > 0 ? (
                 <div className="space-y-4">
-                  {result.data.interactions.map((interaction: any, i: number) => (
+                  {result.data.verdict.interactions.map((interaction: any, i: number) => (
                     <div key={i} className="p-4 rounded-xl bg-background border border-border">
                       <div className="flex items-center gap-3 mb-2">
                         <SeverityBadge severity={interaction.severity || 'moderate'} />
-                        <span className="font-medium text-text-primary">{interaction.title || 'Interaction'}</span>
+                        <span className="font-medium text-text-primary">{interaction.drug || 'Interaction'}</span>
                       </div>
-                      <p className="text-sm text-text-muted mb-2">{interaction.description || interaction.mechanism}</p>
-                      {interaction.advice && (
-                        <p className="text-sm text-primary">{interaction.advice}</p>
-                      )}
+                      <p className="text-sm text-text-muted mb-2">{interaction.description}</p>
                     </div>
                   ))}
                 </div>
@@ -165,10 +179,10 @@ export default function MedicineChecker() {
             </CardContent>
           </Card>
 
-          {result.data?.advice && (
+          {result.data?.verdict?.general_advice && (
             <Card>
               <CardContent className="p-6">
-                <p className="text-sm text-text-primary leading-relaxed">{result.data.advice}</p>
+                <p className="text-sm text-text-primary leading-relaxed">{result.data.verdict.general_advice}</p>
               </CardContent>
             </Card>
           )}
@@ -180,7 +194,7 @@ export default function MedicineChecker() {
             </p>
           </div>
 
-          <CitationsBar sources={result.data?.sources || []} />
+          <CitationsBar sources={result.data?.verdict?.sources_used || []} />
           <DisclaimerBanner />
 
           <Button variant="outline" onClick={resetAll} className="w-full">

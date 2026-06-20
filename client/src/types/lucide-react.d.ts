@@ -47,4 +47,20 @@ declare module 'lucide-react' {
   export const Sparkles: Icon;
   export const Droplets: Icon;
   export const UserPlus: Icon;
+  export const History: Icon;
+  export const BarChart3: Icon;
+  export const Apple: Icon;
+  export const UserCheck: Icon;
+  export const Minus: Icon;
+  export const Search: Icon;
+  export const Filter: Icon;
+  export const Clock: Icon;
+  export const SortAsc: Icon;
+  export const Star: Icon;
+  export const Shield: Icon;
+  export const SkipForward: Icon;
+  export const Bookmark: Icon;
+  export const Leaf: Icon;
+  export const Utensils: Icon;
+  export const Globe: Icon;
 }

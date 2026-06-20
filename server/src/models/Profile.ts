@@ -6,7 +6,7 @@ export interface IProfile extends Document {
   age?: number;
   gender?: 'male' | 'female' | 'other';
   avatar?: string;
-  dietType?: 'vegetarian' | 'vegan' | 'non-veg' | 'jain' | 'keto' | 'diabetic-friendly';
+  dietType?: 'vegetarian' | 'vegan' | 'eggetarian' | 'non-veg' | 'jain' | 'keto' | 'diabetic-friendly';
   allergies: string[];
   conditions: string[];
   medications: { name: string; dosage: string }[];
@@ -40,7 +40,7 @@ const profileSchema = new Schema<IProfile>(
     },
     dietType: {
       type: String,
-      enum: ['vegetarian', 'vegan', 'non-veg', 'jain', 'keto', 'diabetic-friendly'],
+      enum: ['vegetarian', 'vegan', 'eggetarian', 'non-veg', 'jain', 'keto', 'diabetic-friendly'],
     },
     allergies: [
       {

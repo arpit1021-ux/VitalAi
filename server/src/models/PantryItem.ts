@@ -5,6 +5,7 @@ export interface IPantryItem extends Document {
   name: string;
   quantity?: number;
   unit?: string;
+  category?: string;
   expiryDate?: Date;
   createdAt: Date;
   updatedAt: Date;
@@ -27,6 +28,11 @@ const pantryItemSchema = new Schema<IPantryItem>(
     },
     unit: {
       type: String,
+    },
+    category: {
+      type: String,
+      enum: ['grains', 'dairy', 'produce', 'protein', 'spices', 'other'],
+      default: 'other',
     },
     expiryDate: {
       type: Date,

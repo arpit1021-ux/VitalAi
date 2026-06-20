@@ -4,6 +4,8 @@ export interface IChatMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
+  ragUsed?: boolean;
+  ragSourceCount?: number;
 }
 
 export interface IChatSession extends Document {
@@ -37,6 +39,14 @@ const chatSessionSchema = new Schema<IChatSession>(
         timestamp: {
           type: Date,
           default: Date.now,
+        },
+        ragUsed: {
+          type: Boolean,
+          default: false,
+        },
+        ragSourceCount: {
+          type: Number,
+          default: 0,
         },
       },
     ],

@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { queryClaude } from '../services/claude.js';
+import { parseClaudeJson } from '../utils/parseClaudeJson.js';
 import FamilyInsight from '../models/FamilyInsight.js';
 import Profile from '../models/Profile.js';
 import ScanHistory from '../models/ScanHistory.js';
@@ -54,6 +55,8 @@ router.get('/family/:userId', async (req: Request, res: Response) => {
 
       const systemPrompt = `You are generating family health insights. Analyze the family's health data and provide personalized insights and recommendations.
 
+Respond with ONLY the JSON object, no preamble, no explanation, no markdown fencing.
+
 Return a JSON response with this exact structure:
 {
   "family_summary": "overall family health summary",
@@ -71,13 +74,10 @@ Return a JSON response with this exact structure:
         userMessage,
       });
 
-      let parsed;
-      try {
-        const jsonMatch = claudeResponse.match(/\{[\s\S]*\}/);
-        parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : { family_summary: claudeResponse };
-      } catch {
-        parsed = { family_summary: claudeResponse };
-      }
+      const parsed = parseClaudeJson<{ family_summary: string }>(
+        claudeResponse,
+        { family_summary: claudeResponse }
+      );
 
       insight = await FamilyInsight.create({
         userId: req.params.userId,
@@ -124,6 +124,8 @@ router.post('/generate', async (req: Request, res: Response) => {
 
     const systemPrompt = `You are generating family health insights. Analyze the family's health data and provide personalized insights and recommendations.
 
+Respond with ONLY the JSON object, no preamble, no explanation, no markdown fencing.
+
 Return a JSON response with this exact structure:
 {
   "family_summary": "overall family health summary",
@@ -141,13 +143,10 @@ Return a JSON response with this exact structure:
       userMessage,
     });
 
-    let parsed;
-    try {
-      const jsonMatch = claudeResponse.match(/\{[\s\S]*\}/);
-      parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : { family_summary: claudeResponse };
-    } catch {
-      parsed = { family_summary: claudeResponse };
-    }
+    const parsed = parseClaudeJson<{ family_summary: string }>(
+      claudeResponse,
+      { family_summary: claudeResponse }
+    );
 
     const insight = await FamilyInsight.create({
       userId: (req as any).jwtUser!.id,

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, Send, Trash2, MessageSquare, Bot, User, Loader2 } from 'lucide-react';
+import { Plus, Send, Trash2, MessageSquare, Bot, User, Loader2, Globe } from 'lucide-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import ReactMarkdown from 'react-markdown';
 import { useProfileStore } from '@/stores/profileStore';
@@ -12,10 +13,20 @@ import { CitationsBar } from '@/components/shared/CitationsBar';
 import { DisclaimerBanner } from '@/components/shared/DisclaimerBanner';
 
 const quickStarters = [
-  'What foods should I avoid with my allergies?',
-  'Recommend a workout plan for my fitness goal',
-  'Help me plan meals for the week',
-  'What supplements should I consider?',
+  'Is this breakfast healthy for me?',
+  'Can I take ibuprofen with my current meds?',
+  'Best foods for my condition',
+  'Home remedy for bloating',
+];
+
+const languages = [
+  { code: 'english', label: 'English', flag: '🇬🇧' },
+  { code: 'hindi', label: 'हिन्दी', flag: '🇮🇳' },
+  { code: 'tamil', label: 'தமிழ்', flag: '🇮🇳' },
+  { code: 'bengali', label: 'বাংলা', flag: '🇮🇳' },
+  { code: 'telugu', label: 'తెలుగు', flag: '🇮🇳' },
+  { code: 'marathi', label: 'मराठी', flag: '🇮🇳' },
+  { code: 'kannada', label: 'ಕನ್ನಡ', flag: '🇮🇳' },
 ];
 
 interface Message {
@@ -25,11 +36,35 @@ interface Message {
 }
 
 export default function VitalBot() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const contextParam = searchParams.get('context');
   const { activeProfile } = useProfileStore();
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState('');
+  const [input, setInput] = useState(contextParam || '');
+  const [language, setLanguage] = useState('english');
+  const [showLanguageMenu, setShowLanguageMenu] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const hasUsedContext = useRef(false);
+  const langMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (contextParam && !hasUsedContext.current && activeProfile) {
+      hasUsedContext.current = true;
+      createSession();
+      setSearchParams({}, { replace: true });
+    }
+  }, [contextParam, activeProfile]);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (langMenuRef.current && !langMenuRef.current.contains(e.target as Node)) {
+        setShowLanguageMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   const { data: sessionsData } = useQuery({
     queryKey: ['chatSessions', activeProfile?._id],
@@ -43,16 +78,36 @@ export default function VitalBot() {
       const newId = res.data.session?._id || res.data._id;
       setSessionId(newId);
       setMessages([]);
+      if (contextParam && !hasUsedContext.current) {
+        hasUsedContext.current = true;
+        setTimeout(() => {
+          setMessages([{ role: 'user', content: contextParam }]);
+          chat.sendMessage(newId, contextParam, language).then((r) => {
+            const reply = r.data;
+            setMessages([
+              { role: 'user', content: contextParam },
+              { role: 'assistant', content: reply.response, sources: reply.sources },
+            ]);
+          });
+          setInput('');
+        }, 100);
+      }
     },
   });
 
   const { mutate: sendMessage, isPending } = useMutation({
-    mutationFn: (content: string) => chat.sendMessage(sessionId!, content),
+    mutationFn: (content: string) => chat.sendMessage(sessionId!, content, language),
     onSuccess: (res) => {
-      const reply = res.data.message || res.data;
+      const reply = res.data;
       setMessages((prev) => [
         ...prev,
-        { role: 'assistant', content: reply.content, sources: reply.sources },
+        { role: 'assistant', content: reply.response, sources: reply.sources },
+      ]);
+    },
+    onError: () => {
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', content: 'Sorry, I encountered an error. Please try again.' },
       ]);
     },
   });
@@ -78,14 +133,21 @@ export default function VitalBot() {
     if (sessionId) sendMessage(prompt);
   };
 
+  const handleNewChat = () => {
+    setSessionId(null);
+    setMessages([]);
+    setInput('');
+  };
+
   const sessions = sessionsData?.sessions || sessionsData || [];
+  const currentLang = languages.find((l) => l.code === language) || languages[0];
 
   return (
-    <div className="flex h-[calc(100vh-8rem)] gap-4">
+    <div className="flex h-[calc(100vh-8rem)] lg:h-[calc(100vh-8rem)] gap-4 pb-16 lg:pb-0">
       <div className="hidden md:block w-64 flex-shrink-0">
         <Card className="h-full">
           <CardContent className="p-4">
-            <Button onClick={() => createSession()} className="w-full mb-4" size="sm">
+            <Button onClick={handleNewChat} className="w-full mb-4" size="sm">
               <Plus className="h-4 w-4 mr-1" /> New Chat
             </Button>
             <ScrollArea className="h-[calc(100%-3rem)]">
@@ -113,6 +175,50 @@ export default function VitalBot() {
 
       <div className="flex-1 flex flex-col">
         <Card className="flex-1 flex flex-col overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-2 border-b border-border">
+            <div className="flex items-center gap-2">
+              <Bot className="h-5 w-5 text-secondary" />
+              <span className="text-sm font-medium text-text-primary">VitalBot</span>
+            </div>
+            <div className="relative" ref={langMenuRef}>
+              <button
+                onClick={() => setShowLanguageMenu(!showLanguageMenu)}
+                className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs text-text-muted hover:bg-surface transition-colors"
+              >
+                <Globe className="h-3.5 w-3.5" />
+                {currentLang.flag} {currentLang.label}
+              </button>
+              <AnimatePresence>
+                {showLanguageMenu && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -8 }}
+                    className="absolute right-0 top-full mt-1 bg-surface border border-border rounded-xl shadow-xl p-1 z-50 w-40"
+                  >
+                    {languages.map((lang) => (
+                      <button
+                        key={lang.code}
+                        onClick={() => {
+                          setLanguage(lang.code);
+                          setShowLanguageMenu(false);
+                        }}
+                        className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm transition-colors ${
+                          language === lang.code
+                            ? 'bg-primary/10 text-primary'
+                            : 'text-text-muted hover:bg-surface hover:text-text-primary'
+                        }`}
+                      >
+                        <span>{lang.flag}</span>
+                        <span>{lang.label}</span>
+                      </button>
+                    ))}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          </div>
+
           <CardContent className="flex-1 overflow-y-auto p-4 space-y-4">
             {messages.length === 0 && !isPending ? (
               <div className="flex flex-col items-center justify-center h-full text-center">
@@ -201,7 +307,7 @@ export default function VitalBot() {
                     handleSend();
                   }
                 }}
-                placeholder="Ask about your health..."
+                placeholder={language === 'english' ? 'Ask about your health...' : `Ask in ${currentLang.label}...`}
                 className="flex-1 min-h-[44px] max-h-32 resize-none rounded-xl bg-surface border border-border px-4 py-3 text-sm text-text-primary placeholder:text-text-muted focus:ring-2 focus:ring-primary/50"
                 rows={1}
               />
