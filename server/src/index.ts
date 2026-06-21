@@ -7,6 +7,7 @@ import passport from 'passport';
 
 import { env } from './config/env.js';
 import { connectDB } from './config/db.js';
+import { getPineconeIndex } from './config/pinecone.js';
 import { generalRateLimiter, aiRateLimiter } from './middleware/rateLimiter.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
@@ -61,6 +62,13 @@ app.use(errorHandler);
 // Start server
 async function start() {
   await connectDB();
+
+  getPineconeIndex().then(() => {
+    console.log('Pinecone index warmed up');
+  }).catch((err) => {
+    console.warn('Pinecone warm-up failed (non-fatal):', err.message);
+  });
+
   app.listen(env.PORT, () => {
     console.log(`VitalAI server running on port ${env.PORT}`);
   });

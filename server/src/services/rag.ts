@@ -30,14 +30,20 @@ export async function searchKnowledgeBase(
   query: string,
   topK = 5
 ): Promise<RAGResult[]> {
+  const embedStart = Date.now();
   const queryEmbedding = await generateEmbedding(query);
-  const index = await getPineconeIndex();
+  const embedMs = Date.now() - embedStart;
 
+  const pineconeStart = Date.now();
+  const index = await getPineconeIndex();
   const results = await index.query({
     vector: queryEmbedding,
     topK,
     includeMetadata: true,
   });
+  const pineconeMs = Date.now() - pineconeStart;
+
+  console.log(`[RAG] Embedding: ${embedMs}ms | Pinecone: ${pineconeMs}ms | Total: ${embedMs + pineconeMs}ms`);
 
   return results.matches
     .filter((match) => match.score && match.score > 0.3)

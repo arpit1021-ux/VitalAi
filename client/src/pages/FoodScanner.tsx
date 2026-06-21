@@ -1,11 +1,11 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Camera, Upload, Type, Loader2, RotateCcw, Package, Bot, AlertTriangle } from 'lucide-react';
+import { Camera, Upload, Type, Loader2, RotateCcw, Package, Bot, AlertTriangle, Eye } from 'lucide-react';
 import { useMutation } from '@tanstack/react-query';
-import { createWorker } from 'tesseract.js';
 import { useProfileStore } from '@/stores/profileStore';
 import { scans, pantry } from '@/lib/api';
+import { performOCR } from '@/lib/ocr';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
@@ -21,9 +21,13 @@ export default function FoodScanner() {
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [ocrLoading, setOcrLoading] = useState(false);
+  const [ocrStatus, setOcrStatus] = useState('');
+  const [ocrError, setOcrError] = useState<string | null>(null);
+  const [confidence, setConfidence] = useState<number | null>(null);
   const [inputMode, setInputMode] = useState<'text' | 'upload'>('text');
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [cameraActive, setCameraActive] = useState(false);
@@ -57,18 +61,30 @@ export default function FoodScanner() {
     setImageFile(file);
     setImagePreview(URL.createObjectURL(file));
     setOcrLoading(true);
+    setOcrError(null);
     setError(null);
+    setConfidence(null);
     try {
-      const worker = await createWorker('eng');
-      const { data: { text } } = await worker.recognize(file);
+      const { text, confidence: conf } = await performOCR(file, setOcrStatus);
       setExtractedText(text);
-      await worker.terminate();
+      setConfidence(conf);
+      if (!text.trim()) {
+        setOcrError('No text found in this image. Try a clearer, well-lit photo of a product label, or enter ingredients manually using the Text tab.');
+      }
     } catch (e) {
-      setError('Failed to extract text from image. Try uploading a clearer photo.');
+      console.error('OCR failed:', e);
+      setOcrError('Could not read text from this image. Try a clearer, well-lit photo, or enter ingredients manually using the Text tab.');
     } finally {
       setOcrLoading(false);
+      setOcrStatus('');
     }
   };
+
+  useEffect(() => {
+    if (!ocrLoading && extractedText && inputMode === 'upload' && textareaRef.current) {
+      textareaRef.current.focus();
+    }
+  }, [ocrLoading, extractedText, inputMode]);
 
   const startCamera = async () => {
     try {
@@ -116,6 +132,8 @@ export default function FoodScanner() {
     setImageFile(null);
     setCameraActive(false);
     setError(null);
+    setOcrError(null);
+    setConfidence(null);
     setAddedToInventory(false);
     reset();
   };
@@ -125,6 +143,8 @@ export default function FoodScanner() {
     const verdict = result?.data?.verdict?.verdict || 'unknown';
     navigate(`/chat?context=${encodeURIComponent(`I just scanned "${productName}" and got a ${verdict} verdict. Can you tell me more about this product?`)}`);
   };
+
+  const lowConfidence = confidence !== null && confidence < 60;
 
   return (
     <div className="max-w-3xl space-y-6">
@@ -201,13 +221,13 @@ export default function FoodScanner() {
                   )}
                   {ocrLoading && (
                     <div className="flex items-center gap-2 text-sm text-text-muted">
-                      <Loader2 className="h-4 w-4 animate-spin" /> Extracting text...
+                      <Loader2 className="h-4 w-4 animate-spin" /> {ocrStatus || 'Extracting text...'}
                     </div>
                   )}
-                  {error && (
-                    <div className="flex items-center gap-2 p-3 rounded-lg bg-danger/10 text-danger text-sm">
+                  {ocrError && (
+                    <div className="flex items-center gap-2 p-3 rounded-lg bg-warning/10 text-warning text-sm">
                       <AlertTriangle className="h-4 w-4 flex-shrink-0" />
-                      {error}
+                      {ocrError}
                     </div>
                   )}
                 </>
@@ -217,7 +237,19 @@ export default function FoodScanner() {
                 <label className="text-sm text-text-muted">
                   {inputMode === 'upload' ? 'Extracted Text (review & edit)' : 'Enter ingredient list'}
                 </label>
+                {inputMode === 'upload' && !ocrLoading && extractedText && lowConfidence && (
+                  <div className="flex items-center gap-2 p-2 rounded-lg bg-warning/10 text-warning text-xs">
+                    <Eye className="h-3.5 w-3.5 flex-shrink-0" />
+                    This text may not be accurate ({Math.round(confidence!)}% confidence) — please review and edit before analyzing.
+                  </div>
+                )}
+                {inputMode === 'upload' && !ocrLoading && extractedText && !lowConfidence && confidence !== null && (
+                  <p className="text-xs text-text-muted">
+                    Double-check the ingredients below before analyzing — OCR isn't perfect.
+                  </p>
+                )}
                 <Textarea
+                  ref={textareaRef}
                   value={extractedText}
                   onChange={(e) => setExtractedText(e.target.value)}
                   placeholder="Paste or type ingredient list here..."

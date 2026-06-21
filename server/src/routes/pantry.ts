@@ -7,19 +7,21 @@ import { parseClaudeJson } from '../utils/parseClaudeJson.js';
 import PantryItem from '../models/PantryItem.js';
 import Profile from '../models/Profile.js';
 
-async function getRagContextSafely(query: string, timeoutMs = 4000): Promise<{ context: string; sources: string[] }> {
+async function getRagContextSafely(query: string, timeoutMs = 8000): Promise<{ context: string; sources: string[] }> {
+  const startTime = Date.now();
   try {
     const ragPromise = searchKnowledgeBase(query);
     const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('RAG timeout')), timeoutMs)
+      setTimeout(() => reject(new Error(`RAG timeout after ${Date.now() - startTime}ms`)), timeoutMs)
     );
     const ragResults = await Promise.race([ragPromise, timeoutPromise]);
+    console.log(`[RAG] Succeeded in ${Date.now() - startTime}ms`);
     return {
       context: ragResults.map((r) => `[Source: ${r.metadata.source}] ${r.text}`).join('\n\n'),
       sources: ragResults.map((r) => r.metadata.source),
     };
   } catch (error) {
-    console.warn('RAG retrieval failed, continuing without context:', error);
+    console.warn(`[RAG] Failed after ${Date.now() - startTime}ms:`, error);
     return { context: '', sources: [] };
   }
 }

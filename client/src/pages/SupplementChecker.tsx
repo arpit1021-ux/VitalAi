@@ -1,10 +1,10 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Upload, Type, Loader2, RotateCcw, AlertTriangle } from 'lucide-react';
+import { Upload, Type, Loader2, RotateCcw, AlertTriangle, Eye } from 'lucide-react';
 import { useMutation } from '@tanstack/react-query';
-import { createWorker } from 'tesseract.js';
 import { useProfileStore } from '@/stores/profileStore';
 import { scans } from '@/lib/api';
+import { performOCR } from '@/lib/ocr';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
@@ -45,9 +45,13 @@ export default function SupplementChecker() {
   const [extractedText, setExtractedText] = useState('');
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [ocrLoading, setOcrLoading] = useState(false);
+  const [ocrStatus, setOcrStatus] = useState('');
+  const [ocrError, setOcrError] = useState<string | null>(null);
+  const [confidence, setConfidence] = useState<number | null>(null);
   const [inputMode, setInputMode] = useState<'text' | 'upload'>('text');
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const { mutate: analyze, data: result, isPending, reset } = useMutation({
     mutationFn: () => scans.scanSupplement(extractedText, activeProfile!._id),
@@ -59,18 +63,30 @@ export default function SupplementChecker() {
   const handleFileUpload = async (file: File) => {
     setImagePreview(URL.createObjectURL(file));
     setOcrLoading(true);
+    setOcrError(null);
     setError(null);
+    setConfidence(null);
     try {
-      const worker = await createWorker('eng');
-      const { data: { text } } = await worker.recognize(file);
+      const { text, confidence: conf } = await performOCR(file, setOcrStatus);
       setExtractedText(text);
-      await worker.terminate();
+      setConfidence(conf);
+      if (!text.trim()) {
+        setOcrError('No text found in this image. Try a clearer photo of the supplement label, or enter supplement details manually using the Text tab.');
+      }
     } catch (e) {
-      setError('Failed to extract text from image. Please try again.');
+      console.error('OCR failed:', e);
+      setOcrError('Could not read text from this image. Try a clearer photo, or enter supplement details manually using the Text tab.');
     } finally {
       setOcrLoading(false);
+      setOcrStatus('');
     }
   };
+
+  useEffect(() => {
+    if (!ocrLoading && extractedText && inputMode === 'upload' && textareaRef.current) {
+      textareaRef.current.focus();
+    }
+  }, [ocrLoading, extractedText, inputMode]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -82,8 +98,12 @@ export default function SupplementChecker() {
     setExtractedText('');
     setImagePreview(null);
     setError(null);
+    setOcrError(null);
+    setConfidence(null);
     reset();
   };
+
+  const lowConfidence = confidence !== null && confidence < 60;
 
   return (
     <div className="max-w-3xl space-y-6">
@@ -132,11 +152,14 @@ export default function SupplementChecker() {
                   />
                   {ocrLoading && (
                     <div className="flex items-center gap-2 text-sm text-text-muted">
-                      <Loader2 className="h-4 w-4 animate-spin" /> Extracting text...
+                      <Loader2 className="h-4 w-4 animate-spin" /> {ocrStatus || 'Extracting text...'}
                     </div>
                   )}
-                  {error && (
-                    <p className="text-sm text-danger">{error}</p>
+                  {ocrError && (
+                    <div className="flex items-center gap-2 p-3 rounded-lg bg-warning/10 text-warning text-sm">
+                      <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+                      {ocrError}
+                    </div>
                   )}
                 </>
               )}
@@ -145,7 +168,19 @@ export default function SupplementChecker() {
                 <label className="text-sm text-text-muted">
                   {inputMode === 'upload' ? 'Extracted Text (review & edit)' : 'Enter supplement details'}
                 </label>
+                {inputMode === 'upload' && !ocrLoading && extractedText && lowConfidence && (
+                  <div className="flex items-center gap-2 p-2 rounded-lg bg-warning/10 text-warning text-xs">
+                    <Eye className="h-3.5 w-3.5 flex-shrink-0" />
+                    This text may not be accurate ({Math.round(confidence!)}% confidence) — please review and edit before analyzing.
+                  </div>
+                )}
+                {inputMode === 'upload' && !ocrLoading && extractedText && !lowConfidence && confidence !== null && (
+                  <p className="text-xs text-text-muted">
+                    Double-check the text below before analyzing — OCR isn't perfect.
+                  </p>
+                )}
                 <Textarea
+                  ref={textareaRef}
                   value={extractedText}
                   onChange={(e) => setExtractedText(e.target.value)}
                   placeholder="e.g., Vitamin D3 5000IU, Omega-3 Fish Oil, Zinc 50mg..."
