@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Badge } from '@/components/ui/badge';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { DisclaimerBanner } from '@/components/shared/DisclaimerBanner';
+import { CitationsBar } from '@/components/shared/CitationsBar';
 
 interface PantryItem {
   _id: string;
@@ -353,6 +354,7 @@ export default function SmartPantry() {
               </CardContent>
             </Card>
           ))}
+          <CitationsBar sources={[]} ragSources={recipes?.ragSources} />
           <DisclaimerBanner />
         </motion.div>
       )}

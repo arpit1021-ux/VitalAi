@@ -7,7 +7,7 @@ import { parseClaudeJson } from '../utils/parseClaudeJson.js';
 import PantryItem from '../models/PantryItem.js';
 import Profile from '../models/Profile.js';
 
-async function getRagContextSafely(query: string, timeoutMs = 8000): Promise<{ context: string; sources: string[] }> {
+async function getRagContextSafely(query: string, timeoutMs = 8000): Promise<{ context: string; sources: string[]; ragSources: { source: string; topic?: string }[] }> {
   const startTime = Date.now();
   try {
     const ragPromise = searchKnowledgeBase(query);
@@ -16,13 +16,15 @@ async function getRagContextSafely(query: string, timeoutMs = 8000): Promise<{ c
     );
     const ragResults = await Promise.race([ragPromise, timeoutPromise]);
     console.log(`[RAG] Succeeded in ${Date.now() - startTime}ms`);
+    const ragSources = ragResults.map((r) => ({ source: r.metadata.source, topic: r.metadata.topic }));
     return {
       context: ragResults.map((r) => `[Source: ${r.metadata.source}] ${r.text}`).join('\n\n'),
       sources: ragResults.map((r) => r.metadata.source),
+      ragSources,
     };
   } catch (error) {
     console.warn(`[RAG] Failed after ${Date.now() - startTime}ms:`, error);
-    return { context: '', sources: [] };
+    return { context: '', sources: [], ragSources: [] };
   }
 }
 
@@ -174,7 +176,7 @@ router.post('/recipes', async (req: Request, res: Response) => {
       scopeNote = `Generate a recipe tailored specifically for ${profile.name}.`;
     }
 
-    const { context: ragContext } = await getRagContextSafely(
+    const { context: ragContext, ragSources } = await getRagContextSafely(
       `recipes healthy cooking ${profile.dietType || ''} ${items.map(i => i.name).join(' ')}`
     );
 
@@ -216,7 +218,7 @@ Return a JSON response with this exact structure:
 
     const parsed = parseClaudeJson<{ recipes: any[] }>(claudeResponse, { recipes: [] });
 
-    res.json({ recipes: parsed.recipes || [] });
+    res.json({ recipes: parsed.recipes || [], ragSources: ragSources.length > 0 ? ragSources : null });
   } catch (error) {
     console.error('Recipe generation error:', error);
     res.status(500).json({ error: 'Recipe generation failed. Please retry.' });

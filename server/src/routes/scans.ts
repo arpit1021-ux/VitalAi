@@ -7,7 +7,7 @@ import { parseClaudeJson } from '../utils/parseClaudeJson.js';
 import Profile from '../models/Profile.js';
 import ScanHistory from '../models/ScanHistory.js';
 
-async function getRagContextSafely(query: string, timeoutMs = 8000): Promise<{ context: string; sources: string[] }> {
+async function getRagContextSafely(query: string, timeoutMs = 8000): Promise<{ context: string; sources: string[]; ragSources: { source: string; topic?: string }[] }> {
   const startTime = Date.now();
   try {
     const ragPromise = searchKnowledgeBase(query);
@@ -16,13 +16,15 @@ async function getRagContextSafely(query: string, timeoutMs = 8000): Promise<{ c
     );
     const ragResults = await Promise.race([ragPromise, timeoutPromise]);
     console.log(`[RAG] Succeeded in ${Date.now() - startTime}ms`);
+    const ragSources = ragResults.map((r) => ({ source: r.metadata.source, topic: r.metadata.topic }));
     return {
       context: ragResults.map((r) => `[Source: ${r.metadata.source}] ${r.text}`).join('\n\n'),
       sources: ragResults.map((r) => r.metadata.source),
+      ragSources,
     };
   } catch (error) {
     console.warn(`[RAG] Failed after ${Date.now() - startTime}ms:`, error);
-    return { context: '', sources: [] };
+    return { context: '', sources: [], ragSources: [] };
   }
 }
 
@@ -59,7 +61,7 @@ router.post('/food', upload.single('image'), async (req: Request, res: Response)
       Medications: ${profile.medications?.map(m => `${m.name} ${m.dosage}`).join(', ') || 'None'}
     `;
 
-    const { context: ragContext, sources } = await getRagContextSafely(
+    const { context: ragContext, sources, ragSources } = await getRagContextSafely(
       `food ingredients safety ${extractedText} ${profile.dietType || ''} ${profile.allergies?.join(' ') || ''}`
     );
 
@@ -103,7 +105,7 @@ Return a JSON response with this exact structure:
       ragSourceCount: sources.length,
     });
 
-    res.json({ verdict: parsed });
+    res.json({ verdict: parsed, ragSources: ragSources.length > 0 ? ragSources : null });
   } catch (error) {
     res.status(500).json({ error: 'Food scan analysis failed. Please retry.' });
   }
@@ -127,7 +129,7 @@ router.post('/medicine', upload.single('image'), async (req: Request, res: Respo
       Allergies: ${profile.allergies?.join(', ') || 'None'}
     `;
 
-    const { context: ragContext, sources } = await getRagContextSafely(
+    const { context: ragContext, sources, ragSources } = await getRagContextSafely(
       `drug interactions medicine ${extractedText} ${profile.medications?.map(m => m.name).join(' ') || ''}`
     );
 
@@ -169,7 +171,7 @@ Return a JSON response with this exact structure:
       ragSourceCount: sources.length,
     });
 
-    res.json({ verdict: parsed });
+    res.json({ verdict: parsed, ragSources: ragSources.length > 0 ? ragSources : null });
   } catch (error) {
     res.status(500).json({ error: 'Medicine scan analysis failed. Please retry.' });
   }
@@ -195,7 +197,7 @@ router.post('/supplement', upload.single('image'), async (req: Request, res: Res
       Medications: ${profile.medications?.map(m => `${m.name} ${m.dosage}`).join(', ') || 'None'}
     `;
 
-    const { context: ragContext, sources } = await getRagContextSafely(
+    const { context: ragContext, sources, ragSources } = await getRagContextSafely(
       `supplement ingredients safety ${extractedText} ${profile.fitnessGoal || ''}`
     );
 
@@ -238,7 +240,7 @@ Return a JSON response with this exact structure:
       ragSourceCount: sources.length,
     });
 
-    res.json({ verdict: parsed });
+    res.json({ verdict: parsed, ragSources: ragSources.length > 0 ? ragSources : null });
   } catch (error) {
     res.status(500).json({ error: 'Supplement scan analysis failed. Please retry.' });
   }

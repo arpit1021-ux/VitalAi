@@ -5,28 +5,23 @@ import { searchKnowledgeBase } from '../services/rag.js';
 
 async function runDiagnostic() {
   const queries = [
-    'food ingredients safety Maggi noodles MSG',
-    'drug interactions metformin diabetes',
-    'vitamin supplements calcium iron',
+    { q: 'is MSG safe to eat', expect: 'additives' },
+    { q: 'how much sodium with kidney disease', expect: 'kidney-disease' },
+    { q: 'foods to avoid with diabetes', expect: 'diabetes' },
+    { q: 'fatty liver diet recommendations', expect: 'fatty-liver' },
+    { q: 'gluten allergy hidden sources', expect: 'allergens' },
+    { q: 'statin drug interactions grapefruit', expect: 'drug-interactions' },
   ];
 
-  for (let i = 0; i < 3; i++) {
-    console.log(`\n--- Run ${i + 1} ---`);
-    for (const query of queries) {
-      console.log(`\nQuery: "${query.slice(0, 50)}..."`);
-      const start = Date.now();
-      try {
-        const results = await searchKnowledgeBase(query);
-        const elapsed = Date.now() - start;
-        console.log(`  Completed in ${elapsed}ms — ${results.length} results`);
-        if (results.length > 0) {
-          console.log(`  Top result: score=${results[0].score.toFixed(3)}, source=${results[0].metadata.source}`);
-        }
-      } catch (err: any) {
-        const elapsed = Date.now() - start;
-        console.error(`  FAILED after ${elapsed}ms: ${err.message}`);
-      }
+  for (const { q, expect: expectedTopic } of queries) {
+    console.log(`\nQuery: "${q}" (expect topic: ${expectedTopic})`);
+    const results = await searchKnowledgeBase(q, 5);
+    for (const r of results) {
+      const match = r.metadata.topic === expectedTopic ? '✓' : '✗';
+      console.log(`  ${match} [${r.score.toFixed(3)}] ${r.metadata.source} / ${r.metadata.topic || '?'} — ${r.text.slice(0, 80)}...`);
     }
+    const relevantCount = results.filter((r) => r.metadata.topic === expectedTopic).length;
+    console.log(`  → ${relevantCount}/${results.length} topically relevant`);
   }
 }
 

@@ -22,6 +22,7 @@ export interface RAGResult {
   metadata: {
     source: string;
     category: string;
+    topic?: string;
     url?: string;
   };
 }
@@ -53,6 +54,7 @@ export async function searchKnowledgeBase(
       metadata: {
         source: (match.metadata?.source as string) || 'unknown',
         category: (match.metadata?.category as string) || 'general',
+        topic: (match.metadata?.topic as string) || undefined,
         url: match.metadata?.url as string | undefined,
       },
     }));

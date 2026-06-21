@@ -33,6 +33,7 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   sources?: string[];
+  ragSources?: { source: string; topic?: string }[] | null;
 }
 
 export default function VitalBot() {
@@ -86,7 +87,7 @@ export default function VitalBot() {
             const reply = r.data;
             setMessages([
               { role: 'user', content: contextParam },
-              { role: 'assistant', content: reply.response, sources: reply.sources },
+              { role: 'assistant', content: reply.response, sources: reply.sources, ragSources: reply.ragSources },
             ]);
           });
           setInput('');
@@ -101,7 +102,7 @@ export default function VitalBot() {
       const reply = res.data;
       setMessages((prev) => [
         ...prev,
-        { role: 'assistant', content: reply.response, sources: reply.sources },
+        { role: 'assistant', content: reply.response, sources: reply.sources, ragSources: reply.ragSources },
       ]);
     },
     onError: () => {
@@ -267,11 +268,11 @@ export default function VitalBot() {
                         <div className="text-sm prose prose-invert prose-sm max-w-none">
                           <ReactMarkdown>{msg.content}</ReactMarkdown>
                         </div>
-                        {msg.sources && msg.sources.length > 0 && (
-                          <div className="mt-2 pt-2 border-t border-border/50">
-                            <CitationsBar sources={msg.sources} />
-                          </div>
-                        )}
+                          {msg.sources && msg.sources.length > 0 && (
+                            <div className="mt-2 pt-2 border-t border-border/50">
+                              <CitationsBar sources={msg.sources} ragSources={msg.ragSources} />
+                            </div>
+                          )}
                       </div>
                     </div>
                   </motion.div>

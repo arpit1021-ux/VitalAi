@@ -328,7 +328,7 @@ export default function FoodScanner() {
             </Card>
           )}
 
-          <CitationsBar sources={result.data?.verdict?.sources_used || []} />
+          <CitationsBar sources={result.data?.verdict?.sources_used || []} ragSources={result.data?.ragSources} />
           <DisclaimerBanner />
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">

@@ -9,7 +9,7 @@ const router = Router();
 
 router.use(authenticate);
 
-async function getRagContextSafely(query: string, timeoutMs = 8000): Promise<{ context: string; sources: string[] }> {
+async function getRagContextSafely(query: string, timeoutMs = 8000): Promise<{ context: string; sources: string[]; ragSources: { source: string; topic?: string }[] }> {
   const startTime = Date.now();
   try {
     const ragPromise = searchKnowledgeBase(query);
@@ -18,13 +18,15 @@ async function getRagContextSafely(query: string, timeoutMs = 8000): Promise<{ c
     );
     const ragResults = await Promise.race([ragPromise, timeoutPromise]);
     console.log(`[RAG] Succeeded in ${Date.now() - startTime}ms`);
+    const ragSources = ragResults.map((r) => ({ source: r.metadata.source, topic: r.metadata.topic }));
     return {
       context: ragResults.map((r) => `[Source: ${r.metadata.source}] ${r.text}`).join('\n\n'),
       sources: ragResults.map((r) => r.metadata.source),
+      ragSources,
     };
   } catch (error) {
     console.warn(`[RAG] Failed after ${Date.now() - startTime}ms:`, error);
-    return { context: '', sources: [] };
+    return { context: '', sources: [], ragSources: [] };
   }
 }
 
@@ -120,7 +122,7 @@ router.post('/message', async (req: Request, res: Response) => {
       timestamp: new Date(),
     });
 
-    const { context: ragContext, sources } = await getRagContextSafely(content);
+    const { context: ragContext, sources, ragSources } = await getRagContextSafely(content);
 
     const recentMessages = session.messages.slice(-10);
     const conversationContext = recentMessages
@@ -191,6 +193,7 @@ ${conversationContext}${languageInstruction}`;
       response: claudeResponse,
       sessionId: session._id,
       sources,
+      ragSources: ragSources.length > 0 ? ragSources : null,
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to send message. Please retry.' });
