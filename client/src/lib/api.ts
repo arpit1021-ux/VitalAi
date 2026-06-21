@@ -100,6 +100,8 @@ export const dashboardExtended = {
   getRecipes: (profileId: string) => api.get(`/dashboard/recipes/${profileId}`),
   getMoreRecipes: (profileId: string, excludeNames: string[]) =>
     api.post(`/dashboard/recipes/${profileId}/more`, { excludeNames }),
+  expandRecipe: (profileId: string, recipeName: string, recipeDescription: string) =>
+    api.post('/dashboard/recipes/expand', { profileId, recipeName, recipeDescription }),
 };
 
 export const healthScore = {

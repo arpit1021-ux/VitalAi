@@ -123,7 +123,14 @@ export default function DinnerIdeasCarousel({ profileId, loading }: DinnerIdeasC
   };
 
   const handleCookThis = () => {
-    navigate('/pantry');
+    navigate('/recipe-detail', {
+      state: {
+        name: currentRecipe.name,
+        description: currentRecipe.description,
+        emoji: currentRecipe.emoji,
+        prepTime: currentRecipe.prepTime,
+      },
+    });
   };
 
   const slideVariants = {

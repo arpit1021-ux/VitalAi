@@ -15,6 +15,7 @@ import MedicineChecker from '@/pages/MedicineChecker';
 import SupplementChecker from '@/pages/SupplementChecker';
 import VitalBot from '@/pages/VitalBot';
 import SmartPantry from '@/pages/SmartPantry';
+import RecipeDetail from '@/pages/RecipeDetail';
 import FamilyInsights from '@/pages/FamilyInsights';
 import ScanHistory from '@/pages/ScanHistory';
 import HealthTimeline from '@/pages/HealthTimeline';
@@ -140,6 +141,14 @@ function AppRoutes() {
             element={
               <ProtectedRoute>
                 <Layout><RecipesPage /></Layout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/recipe-detail"
+            element={
+              <ProtectedRoute>
+                <Layout><RecipeDetail /></Layout>
               </ProtectedRoute>
             }
           />

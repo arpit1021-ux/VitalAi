@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Plus, Trash2, ChefHat, Loader2, AlertTriangle, Package, Users, Check, Bookmark } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -31,7 +32,26 @@ const categories = [
   { value: 'other', label: 'Other', emoji: '📦' },
 ];
 
+function parseIngredientName(ingredient: string): string {
+  const cleaned = ingredient
+    .replace(/\(.*?\)/g, '')
+    .replace(/\b(to taste|as needed|or to taste|optional)\b/gi, '')
+    .replace(/\b(\d+\/\d+|\d+)\s*(cup|cups|tbsp|tsp|tablespoon|teaspoon|oz|ounce|grams?|kg|ml|litre|liter|pound|lb|pinch|piece|pieces|clove|cloves|bunch|stalk|stalks|can|cans|slice|slices|medium|large|small)\b/gi, '')
+    .replace(/^[,\s]+|[,\s]+$/g, '')
+    .trim();
+
+  if (cleaned.length > 2) {
+    const words = cleaned.split(/\s+/).filter((w: string) => w.length > 1);
+    if (words.length <= 3) return words.join(' ');
+    return words.slice(0, 3).join(' ');
+  }
+
+  const fallback = ingredient.replace(/\(.*?\)/g, '').replace(/^\d[\d\s\/]*\w*\s*/i, '').trim();
+  return fallback.length > 2 ? fallback.slice(0, 30) : ingredient.slice(0, 30);
+}
+
 export default function SmartPantry() {
+  const location = useLocation();
   const { activeProfile } = useProfileStore();
   const queryClient = useQueryClient();
   const [showAddForm, setShowAddForm] = useState(false);
@@ -39,6 +59,15 @@ export default function SmartPantry() {
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [recipeError, setRecipeError] = useState('');
   const [form, setForm] = useState({ name: '', quantity: '', unit: 'pieces', category: 'other', expiryDate: '' });
+  const [addPrefill, setAddPrefill] = useState<string | null>(null);
+
+  const targetRecipe = useMemo(() => {
+    const state = location.state as { targetRecipe?: { name: string; ingredients: string[] } } | null;
+    return state?.targetRecipe || null;
+  }, [location.state]);
+
+  const [dismissedBanner, setDismissedBanner] = useState(false);
+  const showBanner = targetRecipe && !dismissedBanner;
 
   const { data, isLoading } = useQuery({
     queryKey: ['pantry', activeProfile?._id],
@@ -61,6 +90,7 @@ export default function SmartPantry() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pantry', activeProfile?._id] });
       setShowAddForm(false);
+      setAddPrefill(null);
       setForm({ name: '', quantity: '', unit: 'pieces', category: 'other', expiryDate: '' });
     },
   });
@@ -118,6 +148,58 @@ export default function SmartPantry() {
     return new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime();
   });
 
+  const { matchedItemIds, missingIngredients } = useMemo(() => {
+    if (!targetRecipe?.ingredients?.length) {
+      return { matchedItemIds: new Set<string>(), missingIngredients: [] as string[] };
+    }
+
+    if (!items.length) {
+      return { matchedItemIds: new Set<string>(), missingIngredients: targetRecipe.ingredients };
+    }
+
+    const matched = new Set<string>();
+    const missing: string[] = [];
+
+    for (const ingredient of targetRecipe.ingredients) {
+      const ingredientLower = ingredient.toLowerCase();
+      let found = false;
+
+      for (const item of items) {
+        const itemNameLower = item.name.toLowerCase();
+        if (
+          ingredientLower.includes(itemNameLower) ||
+          itemNameLower.includes(ingredientLower) ||
+          ingredientLower.split(/\s+/).some((word: string) => word.length > 2 && itemNameLower.includes(word))
+        ) {
+          matched.add(item._id);
+          found = true;
+          break;
+        }
+      }
+
+      if (!found) {
+        missing.push(ingredient);
+      }
+    }
+
+    return { matchedItemIds: matched, missingIngredients: missing };
+  }, [targetRecipe, items]);
+
+  useEffect(() => {
+    if (matchedItemIds.size > 0 && showBanner) {
+      setSelectedItems(matchedItemIds);
+    }
+  }, [matchedItemIds, showBanner]);
+
+  const allMatched = targetRecipe && missingIngredients.length === 0 && targetRecipe.ingredients.length > 0;
+
+  const openAddWithPrefill = useCallback((ingredient: string) => {
+    const name = parseIngredientName(ingredient);
+    setAddPrefill(ingredient);
+    setForm((p) => ({ ...p, name, category: 'other' }));
+    setShowAddForm(true);
+  }, []);
+
   const getExpiryInfo = (date: string) => {
     if (!date) return { color: 'border-l-text-muted', chip: null as string | null, chipVariant: 'outline' as const };
     const days = Math.ceil((new Date(date).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
@@ -156,6 +238,65 @@ export default function SmartPantry() {
           </Button>
         </div>
       </motion.div>
+
+      {showBanner && (
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -10 }}
+        >
+          <Card className="border-primary/30 bg-primary/5">
+            <CardContent className="p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-text-primary">
+                    🍳 Cooking: <span className="text-primary">{targetRecipe.name}</span>
+                  </p>
+                  {items.length === 0 ? (
+                    <p className="text-xs text-text-muted mt-1">
+                      Starting fresh? Here's what you'll need:
+                    </p>
+                  ) : (
+                    <p className="text-xs text-text-muted mt-1">
+                      We've highlighted {matchedItemIds.size} item{matchedItemIds.size !== 1 ? 's' : ''} you already have
+                    </p>
+                  )}
+                </div>
+                <button
+                  onClick={() => setDismissedBanner(true)}
+                  className="text-text-muted hover:text-text-primary text-xs flex-shrink-0"
+                >
+                  Dismiss
+                </button>
+              </div>
+
+              {missingIngredients.length > 0 && (
+                <div className="mt-3 pt-3 border-t border-primary/20">
+                  <div className="flex items-center gap-1.5 mb-2">
+                    <span className="text-xs">🛒</span>
+                    <p className="text-xs font-medium text-text-muted">
+                      Shopping list — you'll need to buy:
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {missingIngredients.map((ing, i) => (
+                      <button
+                        key={i}
+                        onClick={() => openAddWithPrefill(ing)}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-border bg-surface text-[11px] text-text-primary hover:border-primary/50 hover:bg-primary/5 transition-colors group"
+                        title={`Add "${parseIngredientName(ing)}" to pantry`}
+                      >
+                        <span className="truncate max-w-[140px]">{ing}</span>
+                        <Plus className="h-3 w-3 text-text-muted group-hover:text-primary flex-shrink-0" />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </motion.div>
+      )}
 
       {isLoading ? (
         <div className="space-y-3">
@@ -241,6 +382,11 @@ export default function SmartPantry() {
 
       {items.length > 0 && (
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
+          {showBanner && allMatched && (
+            <p className="text-sm text-primary font-medium text-center mb-2">
+              You have everything for {targetRecipe.name}!
+            </p>
+          )}
           <Button
             onClick={() => setShowScopeModal(true)}
             disabled={generatingRecipes}
@@ -391,18 +537,21 @@ export default function SmartPantry() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={showAddForm} onOpenChange={setShowAddForm}>
+      <Dialog open={showAddForm} onOpenChange={(open) => { setShowAddForm(open); if (!open) setAddPrefill(null); }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Add Pantry Item</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
+            {addPrefill && (
+              <p className="text-xs text-text-muted -mt-2">Adding for recipe: {addPrefill}</p>
+            )}
             <div className="space-y-2">
               <label className="text-sm text-text-muted">Name</label>
               <Input
                 value={form.name}
                 onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
-                placeholder="e.g., Chicken breast"
+                placeholder={addPrefill || 'e.g., Chicken breast'}
               />
             </div>
             <div className="space-y-2">

@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { authenticate } from '../middleware/auth.js';
+import { aiRateLimiter } from '../middleware/rateLimiter.js';
 import { searchKnowledgeBase } from '../services/rag.js';
 import { queryClaude } from '../services/claude.js';
 import { parseClaudeJson } from '../utils/parseClaudeJson.js';
@@ -10,20 +11,24 @@ import DailyLog from '../models/DailyLog.js';
 import { calculateHealthScore } from '../utils/healthScore.js';
 import { calculateProfileCompletion } from '../utils/profileCompletion.js';
 
-async function getRagContextSafely(query: string, timeoutMs = 4000): Promise<{ context: string; sources: string[] }> {
+async function getRagContextSafely(query: string, timeoutMs = 8000): Promise<{ context: string; sources: string[]; ragSources: { source: string; topic?: string }[] }> {
+  const startTime = Date.now();
   try {
     const ragPromise = searchKnowledgeBase(query);
     const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('RAG timeout')), timeoutMs)
+      setTimeout(() => reject(new Error(`RAG timeout after ${Date.now() - startTime}ms`)), timeoutMs)
     );
     const ragResults = await Promise.race([ragPromise, timeoutPromise]);
+    console.log(`[RAG] Succeeded in ${Date.now() - startTime}ms`);
+    const ragSources = ragResults.map((r) => ({ source: r.metadata.source, topic: r.metadata.topic }));
     return {
       context: ragResults.map((r) => `[Source: ${r.metadata.source}] ${r.text}`).join('\n\n'),
       sources: ragResults.map((r) => r.metadata.source),
+      ragSources,
     };
   } catch (error) {
-    console.warn('RAG retrieval failed, continuing without context:', error);
-    return { context: '', sources: [] };
+    console.warn(`[RAG] Failed after ${Date.now() - startTime}ms:`, error);
+    return { context: '', sources: [], ragSources: [] };
   }
 }
 
@@ -162,6 +167,103 @@ Return exactly 5 recipes.`;
     res.json({ recipes });
   } catch (error) {
     res.status(500).json({ error: 'Failed to generate more recipes' });
+  }
+});
+
+router.post('/recipes/expand', aiRateLimiter, async (req: Request, res: Response) => {
+  try {
+    const { profileId, recipeName, recipeDescription } = req.body;
+
+    if (!profileId || !recipeName) {
+      res.status(400).json({ error: 'profileId and recipeName are required' });
+      return;
+    }
+
+    const profile = await Profile.findOne({
+      _id: profileId,
+      userId: (req as any).jwtUser!.id,
+    });
+    if (!profile) {
+      res.status(404).json({ error: 'Profile not found' });
+      return;
+    }
+
+    const profileContext = `
+      Name: ${profile.name}
+      Diet Type: ${profile.dietType || 'Not specified'}
+      Allergies: ${profile.allergies?.join(', ') || 'None'}
+      Conditions: ${profile.conditions?.join(', ') || 'None'}
+      Fitness Goal: ${profile.fitnessGoal || 'Not specified'}
+      Activity Level: ${profile.activityLevel || 'Not specified'}
+    `;
+
+    const { context: ragContext, ragSources } = await getRagContextSafely(
+      `recipes healthy cooking ${recipeName} ${profile.dietType || ''} ${profile.allergies?.join(' ') || ''}`
+    );
+
+    const systemPrompt = `You are a health-conscious recipe assistant. Expand this dinner idea into a full, detailed recipe tailored to the user's dietary preferences and health profile.
+
+CRITICAL DIETARY RULES:
+- If diet is "vegetarian": NO meat, NO seafood, NO eggs.
+- If diet is "vegan": NO animal products at all.
+- If diet is "eggetarian": eggs ARE allowed, but NO meat or seafood.
+- If diet is "jain": NO root vegetables (onion, garlic, potato, carrot, etc.), NO meat, NO eggs.
+- NEVER suggest any dish containing the user's listed allergens.
+
+Respond with ONLY the JSON object, no preamble, no explanation, no markdown fencing.
+
+Return a JSON response with this exact structure:
+{
+  "name": "recipe name",
+  "description": "brief description (1-2 sentences)",
+  "ingredients": ["ingredient with quantity"],
+  "instructions": ["step 1", "step 2", ...],
+  "health_benefits": "how this recipe aligns with health goals",
+  "preparation_time": "estimated time",
+  "serves": "number of servings",
+  "dietary_tags": ["tag1", "tag2"],
+  "nutrition": {
+    "calories": "number",
+    "protein": "number",
+    "carbs": "number",
+    "fat": "number"
+  }
+}`;
+
+    const userMessage = `Health Profile:\n${profileContext}\n\nDinner Idea:\nName: ${recipeName}\nDescription: ${recipeDescription || 'No description provided'}\n\nPlease expand this into a full, detailed recipe with ingredients, instructions, and nutritional information.`;
+
+    const claudeResponse = await queryClaude({
+      systemPrompt,
+      userMessage,
+      context: ragContext,
+    });
+
+    const parsed = parseClaudeJson<{
+      name: string;
+      description: string;
+      ingredients: string[];
+      instructions: string[];
+      health_benefits: string;
+      preparation_time: string;
+      serves: string;
+      dietary_tags: string[];
+      nutrition: { calories: string; protein: string; carbs: string; fat: string };
+    }>(claudeResponse, {
+      name: recipeName,
+      description: recipeDescription || '',
+      ingredients: [],
+      instructions: [],
+      health_benefits: '',
+      preparation_time: '',
+      serves: '',
+      dietary_tags: [],
+      nutrition: { calories: '', protein: '', carbs: '', fat: '' },
+    });
+
+    res.json({ recipe: parsed, ragSources: ragSources.length > 0 ? ragSources : null });
+  } catch (error) {
+    console.error('Recipe expand error:', error);
+    res.status(500).json({ error: 'Failed to expand recipe. Please retry.' });
   }
 });
 
