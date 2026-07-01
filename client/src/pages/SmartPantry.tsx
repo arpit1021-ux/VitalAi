@@ -497,6 +497,45 @@ export default function SmartPantry() {
                     {recipe.nutrition.fat && <span>{recipe.nutrition.fat}g fat</span>}
                   </div>
                 )}
+
+                {Array.isArray(recipe.missing_ingredients) && recipe.missing_ingredients.length > 0 && (
+                  <div className="p-3 rounded-lg bg-warning/10 border border-warning/20">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Package className="h-4 w-4 text-warning" />
+                      <p className="text-xs font-medium text-warning">Shopping List — Items to Buy</p>
+                    </div>
+                    <ul className="text-sm text-text-primary space-y-1 mb-3">
+                      {recipe.missing_ingredients.map((ing: string, k: number) => (
+                        <li key={k} className="flex items-center gap-2">
+                          <span className="text-warning">•</span>
+                          {ing}
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="flex flex-wrap gap-2">
+                      {recipe.missing_ingredients.map((ing: string, k: number) => (
+                        <Button
+                          key={k}
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs gap-1"
+                          onClick={() => openAddWithPrefill(ing)}
+                        >
+                          <Plus className="h-3 w-3" /> Add "{ing.split('(')[0].trim()}" to pantry
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {Array.isArray(recipe.missing_ingredients) && recipe.missing_ingredients.length === 0 && (
+                  <div className="p-3 rounded-lg bg-primary/10 border border-primary/20">
+                    <div className="flex items-center gap-2">
+                      <Check className="h-4 w-4 text-primary" />
+                      <p className="text-xs font-medium text-primary">All ingredients available in your pantry!</p>
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
           ))}

@@ -203,12 +203,15 @@ Return a JSON response with this exact structure:
       "health_benefits": "how this recipe aligns with health goals",
       "preparation_time": "estimated time",
       "serves": "number of servings",
-      "dietary_tags": ["tag1", "tag2"]
+      "dietary_tags": ["tag1", "tag2"],
+      "missing_ingredients": ["ingredient needed but NOT in pantry"]
     }
   ]
-}`;
+}
 
-    const userMessage = `${profileContext}\n\nAvailable Pantry Items:\n${pantryList || 'No items in pantry'}\n\nPlease suggest 1 healthy recipe using the available ingredients.`;
+IMPORTANT: The "missing_ingredients" field must list ONLY ingredients that are NOT already in the user's pantry. Compare against the provided pantry list carefully. If all ingredients are available, return an empty array.`;
+
+    const userMessage = `${profileContext}\n\nAvailable Pantry Items:\n${pantryList || 'No items in pantry'}\n\nPlease suggest 1 healthy recipe using the available ingredients. List any missing ingredients separately.`;
 
     const claudeResponse = await queryClaude({
       systemPrompt,
@@ -219,9 +222,16 @@ Return a JSON response with this exact structure:
     const parsed = parseClaudeJson<{ recipes: any[] }>(claudeResponse, { recipes: [] });
 
     res.json({ recipes: parsed.recipes || [], ragSources: ragSources.length > 0 ? ragSources : null });
-  } catch (error) {
-    console.error('Recipe generation error:', error);
-    res.status(500).json({ error: 'Recipe generation failed. Please retry.' });
+  } catch (error: any) {
+    console.error('Recipe generation error:', error?.message || error);
+    const errMsg = String(error?.message || error || '');
+    if (errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED')) {
+      res.status(500).json({ error: 'AI service is busy. Please wait a moment and try again.' });
+    } else if (errMsg.includes('503') || errMsg.includes('UNAVAILABLE')) {
+      res.status(500).json({ error: 'AI service is temporarily unavailable. Please try again shortly.' });
+    } else {
+      res.status(500).json({ error: 'Recipe generation failed. Please try again.' });
+    }
   }
 });
 

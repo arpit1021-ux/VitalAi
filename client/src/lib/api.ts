@@ -117,6 +117,7 @@ export const scansExtended = {
   getHistoryFiltered: (profileId: string, params: { type?: string; search?: string; sort?: string; page?: number; limit?: number }) =>
     api.get(`/scans/history/${profileId}`, { params }),
   deleteScan: (id: string) => api.delete(`/scans/history/${id}`),
+  clearAllHistory: (profileId: string) => api.delete(`/scans/history/all/${profileId}`),
 };
 
 export const savedRecipes = {
