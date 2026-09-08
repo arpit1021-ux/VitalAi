@@ -1,86 +1,101 @@
-# VitalAI — AI-Powered Family Nutrition Assistant
+# VitalAI
 
-Most nutrition apps treat one person. But families eat together — and every member has different restrictions.
+A nutrition assistant built around families rather than individuals. One
+account holds several profiles — a diabetic parent, a vegetarian sibling, a
+child with a nut allergy — and every answer the app gives is checked against
+the profile it is for.
 
-I wanted to build something that understands a family as a unit: one person is diabetic, another is lactose intolerant, someone else is vegetarian. VitalAI generates recipes that satisfy everyone simultaneously, scans barcodes to flag dangerous ingredients, and answers nutrition questions in multiple languages.
+Photograph a food label and it reads the ingredients and tells you whether that
+product is a problem for that specific person. Ask it a nutrition question and
+it answers from a curated knowledge base rather than from the model's memory,
+and shows you which sources it used.
 
-**Next.js · Express · MongoDB · Claude API · Pinecone · RAG**
+## Stack
 
----
+| Layer | What |
+|---|---|
+| Client | React 18, Vite, TypeScript, Tailwind, Radix UI, TanStack Query, Zustand |
+| Server | Node 20, Express, TypeScript (ESM), Mongoose |
+| Database | MongoDB |
+| Retrieval | Pinecone serverless, `gemini-embedding-001` at 1536 dimensions |
+| Generation | Gemini 2.5 Flash (Anthropic supported via `LLM_PROVIDER=claude`) |
+| OCR | Tesseract.js, in the browser |
+| Images | Sharp for compression, Cloudinary for storage (optional) |
+| Auth | JWT in httpOnly cookies, bcrypt, optional Google OAuth |
 
-## The Problem
-
-Existing nutrition apps track one person's diet. They don't handle the complexity of real families — where a single meal needs to work for 4+ people with completely different restrictions.
-
-Manually checking every ingredient against every family member's allergens is exhausting. Most people just give up.
-
----
-
-## How It Works
+## How a scan works
 
 ```
-Create family profiles (diet, allergens, health conditions)
-                    ↓
-   Scan product barcodes → OCR extracts ingredients
-   → flags risky items per profile
-                    ↓
-   Enter pantry items → AI generates recipes
-   that satisfy ALL family restrictions
-                    ↓
-   Ask nutrition questions → RAG chatbot
-   answers in your language using verified sources
+photo → browser OCR → POST /api/scans/food
+                        ├─ verify the profile belongs to the caller
+                        ├─ embed the query, retrieve from Pinecone (8s budget,
+                        │  degrades to an ungrounded answer on timeout)
+                        ├─ compress to 800px, strip EXIF, send to Gemini vision
+                        ├─ parse the JSON verdict
+                        └─ store the scan, return verdict + cited sources
 ```
 
----
+Retrieval never blocks a scan. If Pinecone is slow or down the analysis still
+runs, and the response says it was not grounded.
 
-## Features
+## Running it locally
 
-- **Multi-Profile Management** — Up to 6 family members, each with their own diet type, allergens, and health conditions
-- **Barcode Scanner** — Scan products, extract ingredients via OCR, and instantly check them against every family member's restrictions
-- **AI Recipe Generator** — Input what's in your pantry → get recipes that work for everyone, not just one person
-- **RAG Nutrition Chatbot** — Multilingual Q&A powered by Pinecone vector store and Claude API, grounded in verified nutrition data
-- **Daily Activity Logging** — Track meals, water intake, and nutrition goals per profile
-- **JWT Authentication** — Secure per-user data isolation
+Requires Node 20.11 or newer and a MongoDB instance.
 
----
+```bash
+git clone <repo> && cd VitalAI
+npm install
+npm --prefix server install
+npm --prefix client install
 
-## Engineering Highlights
+cp .env.example server/.env      # fill in every value
+cp .env.example client/.env      # only VITE_API_URL is read here
 
-- **Multi-constraint recipe generation** — Merges dietary restrictions from all family profiles into a single compliance check before generating recipes
-- **RAG pipeline** — User queries are embedded, matched against a Pinecone vector store of nutrition documents, and fed to Claude with context for accurate, cited responses
-- **OCR ingredient extraction** — Barcode scanning triggers ingredient extraction using Tesseract.js, then cross-references against each profile's allergen list
-- **MongoDB schema design** — Multi-profile data isolation with per-user activity logging and daily nutrition tracking
+# secrets must be at least 32 characters
+openssl rand -hex 32             # JWT_SECRET
+openssl rand -hex 32             # JWT_REFRESH_SECRET
+```
 
----
+On Windows PowerShell, without openssl:
 
-## The Hardest Problem I Solved
+```powershell
+-join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })
+```
 
-The recipe generator needed to satisfy multiple people's restrictions at once — not just one person's.
+```bash
 
-A recipe might be vegan and gluten-free but still contain nuts, which one family member is allergic to. The naive approach (check one profile at a time) missed these conflicts.
+npm run migrate                  # indexes and backfills, idempotent
+npm run ingest                   # loads the knowledge base into Pinecone
+npm run dev                      # server on :5000, client on :5173
+```
 
-I redesigned it so all profiles are merged into a single constraint set before generation. The AI receives the combined restrictions as context, ensuring every generated recipe works for the whole family. It's a simple idea, but getting the data flow right — from profile merging to constraint injection to recipe validation — took real effort.
+The server validates its entire environment at boot and exits with a list of
+what is wrong rather than starting with insecure defaults. If it will not
+start, the message tells you which variables to fix.
 
----
+## Commands
 
-## Tech Stack
+| Command | What it does |
+|---|---|
+| `npm run dev` | Server and client together, both watching |
+| `npm run build` | Production client build |
+| `npm run typecheck` | TypeScript across both packages |
+| `npm run migrate` | Apply pending migrations (safe to re-run) |
+| `npm run ingest` | Rebuild the Pinecone knowledge base |
 
-| | |
-|-|-|
-| **Frontend** | React.js, Next.js, TypeScript, Tailwind CSS, Framer Motion |
-| **Backend** | Node.js, Express, REST APIs |
-| **Database** | MongoDB (Mongoose) |
-| **AI** | Claude API, Pinecone (Vector DB), RAG Pipeline |
-| **OCR** | Tesseract.js |
-| **Auth** | JWT |
+## Knowledge base
 
----
+110 curated passages across 14 nutrition topics live in
+`server/src/scripts/ingestKnowledge.ts`. `npm run ingest` embeds and upserts
+them. Retrieval returns the top 5 matches above a cosine score of 0.3, and the
+sources are shown in the UI alongside the answer.
 
-## Screenshots
+## What this is not
 
-> *Add screenshots: family profile dashboard, barcode scan flow, recipe generation, chatbot interface*
+VitalAI gives general nutrition information. It does not diagnose, prescribe,
+or replace a clinician, and every response says so. Medication interaction
+checks are a prompt to ask a pharmacist, not an answer.
 
 ---
 
 Built by [Arpit Singh](https://linkedin.com/in/arpitsingh05)
-
