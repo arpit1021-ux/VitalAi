@@ -1,79 +1,77 @@
-import 'dotenv/config';
-import express from 'express';
-import cors from 'cors';
-import cookieParser from 'cookie-parser';
-import helmet from 'helmet';
-import passport from 'passport';
-
+import { createApp } from './app.js';
 import { env } from './config/env.js';
-import { connectDB } from './config/db.js';
+import { connectDB, disconnectDB } from './config/db.js';
 import { getPineconeIndex } from './config/pinecone.js';
-import { generalRateLimiter, aiRateLimiter } from './middleware/rateLimiter.js';
-import { errorHandler } from './middleware/errorHandler.js';
+import { logger } from './utils/logger.js';
+import { captureException, flushObservability, initObservability } from './services/observability.js';
 
-import authRoutes from './routes/auth.js';
-import profileRoutes from './routes/profiles.js';
-import scanRoutes from './routes/scans.js';
-import chatRoutes from './routes/chat.js';
-import pantryRoutes from './routes/pantry.js';
-import insightRoutes from './routes/insights.js';
-import dashboardRoutes from './routes/dashboard.js';
-import dailyLogRoutes from './routes/dailyLog.js';
-import healthScoreRoutes from './routes/healthScore.js';
-import healthInsightsRoutes from './routes/healthInsights.js';
-import savedRecipeRoutes from './routes/savedRecipes.js';
-import communityRoutes from './routes/community.js';
-
-const app = express();
-
-// Middleware
-app.use(cors({
-  origin: 'http://localhost:5173',
-  credentials: true,
-}));
-app.use(cookieParser());
-app.use(helmet());
-app.use(express.json({ limit: '10mb' }));
-app.use(generalRateLimiter);
-app.use(passport.initialize());
-
-// Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/profiles', profileRoutes);
-app.use('/api/scans', aiRateLimiter, scanRoutes);
-app.use('/api/chat', aiRateLimiter, chatRoutes);
-app.use('/api/pantry', pantryRoutes);
-app.use('/api/insights', aiRateLimiter, insightRoutes);
-app.use('/api/dashboard', dashboardRoutes);
-app.use('/api/dailylog', dailyLogRoutes);
-app.use('/api/health-score', healthScoreRoutes);
-app.use('/api/health-insights', aiRateLimiter, healthInsightsRoutes);
-app.use('/api/saved-recipes', savedRecipeRoutes);
-app.use('/api/community', communityRoutes);
-
-// Health check
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
-
-// Error handler
-app.use(errorHandler);
-
-// Start server
-async function start() {
+async function start(): Promise<void> {
+  await initObservability();
   await connectDB();
 
-  getPineconeIndex().then(() => {
-    console.log('Pinecone index warmed up');
-  }).catch((err) => {
-    console.warn('Pinecone warm-up failed (non-fatal):', err.message);
+  const app = createApp();
+
+  const server = app.listen(env.PORT, () => {
+    logger.info('VitalAI server listening', {
+      port: env.PORT,
+      environment: env.NODE_ENV,
+      llmProvider: env.LLM_PROVIDER,
+    });
   });
 
-  app.listen(env.PORT, () => {
-    console.log(`VitalAI server running on port ${env.PORT}`);
+  // Warm the vector index off the critical path so the first user request does
+  // not pay for index resolution. Failure is non-fatal: retrieval degrades to
+  // an ungrounded answer, which the RAG layer already handles.
+  void getPineconeIndex()
+    .then(() => logger.info('Pinecone index warm'))
+    .catch((error) => logger.error('Pinecone warm-up failed; retrieval will retry per request', error));
+
+  let shuttingDown = false;
+
+  const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info('Shutdown signal received', { signal });
+
+    const forced = setTimeout(() => {
+      logger.error('Graceful shutdown timed out; forcing exit');
+      process.exit(1);
+    }, 15_000);
+    forced.unref();
+
+    server.close(async (error) => {
+      if (error) logger.error('Error closing HTTP server', error);
+      try {
+        await flushObservability();
+        await disconnectDB();
+        logger.info('Shutdown complete');
+        process.exit(0);
+      } catch (closeError) {
+        logger.error('Error closing database connection', closeError);
+        process.exit(1);
+      }
+    });
+  };
+
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+
+  process.on('unhandledRejection', (reason) => {
+    logger.error('Unhandled promise rejection', reason);
+    captureException(reason);
+  });
+
+  process.on('uncaughtException', (error) => {
+    logger.error('Uncaught exception; exiting', error);
+    captureException(error);
+    // Give the report a moment to send before the process goes away.
+    void flushObservability(1500).finally(() => process.exit(1));
   });
 }
 
-start().catch(console.error);
+start().catch((error) => {
+  logger.error('Server failed to start', error);
+  process.exit(1);
+});
 
-export default app;
+export { createApp };

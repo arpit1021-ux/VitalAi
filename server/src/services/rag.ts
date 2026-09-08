@@ -1,16 +1,17 @@
 import { GoogleGenAI } from '@google/genai';
-import { v4 as uuidv4 } from 'uuid';
+import { createHash } from 'node:crypto';
 import { env } from '../config/env.js';
 import { getPineconeIndex } from '../config/pinecone.js';
+import { logger } from '../utils/logger.js';
 
-const genAI = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY, apiVersion: 'v1' });
+const genAI = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY as string, apiVersion: 'v1' });
 
 export async function generateEmbedding(text: string): Promise<number[]> {
   const result = await genAI.models.embedContent({
-    model: 'gemini-embedding-001',
+    model: env.GEMINI_EMBEDDING_MODEL,
     contents: text,
     config: {
-      outputDimensionality: 1536,
+      outputDimensionality: env.PINECONE_DIMENSION,
     },
   });
   return result.embeddings?.[0]?.values ?? [];
@@ -44,7 +45,7 @@ export async function searchKnowledgeBase(
   });
   const pineconeMs = Date.now() - pineconeStart;
 
-  console.log(`[RAG] Embedding: ${embedMs}ms | Pinecone: ${pineconeMs}ms | Total: ${embedMs + pineconeMs}ms`);
+  logger.debug('Retrieval timing', { embedMs, pineconeMs, totalMs: embedMs + pineconeMs, topK });
 
   return results.matches
     .filter((match) => match.score && match.score > 0.3)
@@ -60,21 +61,28 @@ export async function searchKnowledgeBase(
     }));
 }
 
+/**
+ * Upserts a passage under an id derived from its own content.
+ *
+ * A random id per call made re-running the ingest script duplicate the entire
+ * corpus, which silently skews retrieval towards whichever passages had been
+ * ingested most often. A content hash makes ingestion idempotent: re-running it
+ * overwrites each passage in place.
+ */
 export async function embedAndStore(
   text: string,
-  metadata: Record<string, any>
+  metadata: Record<string, unknown>,
 ): Promise<void> {
   const embedding = await generateEmbedding(text);
   const index = await getPineconeIndex();
 
+  const id = createHash('sha256').update(text).digest('hex').slice(0, 32);
+
   await index.upsert([
     {
-      id: uuidv4(),
+      id,
       values: embedding,
-      metadata: {
-        text,
-        ...metadata,
-      },
+      metadata: { text, ...metadata },
     },
   ]);
 }

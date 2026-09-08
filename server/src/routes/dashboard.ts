@@ -1,36 +1,28 @@
 import { Router, Request, Response } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { aiRateLimiter } from '../middleware/rateLimiter.js';
-import { searchKnowledgeBase } from '../services/rag.js';
-import { queryClaude } from '../services/claude.js';
-import { parseClaudeJson } from '../utils/parseClaudeJson.js';
+import { getRagContext } from '../services/retrieval.js';
+import { generateText } from '../services/llm.js';
+import { parseJsonResponse } from '../utils/parseJsonResponse.js';
 import Profile from '../models/Profile.js';
 import ScanHistory from '../models/ScanHistory.js';
 import PantryItem from '../models/PantryItem.js';
 import DailyLog from '../models/DailyLog.js';
 import { calculateHealthScore } from '../utils/healthScore.js';
 import { calculateProfileCompletion } from '../utils/profileCompletion.js';
+import { logger } from '../utils/logger.js';
+import { objectId, validate } from '../middleware/validate.js';
+import { z } from 'zod';
 
-async function getRagContextSafely(query: string, timeoutMs = 8000): Promise<{ context: string; sources: string[]; ragSources: { source: string; topic?: string }[] }> {
-  const startTime = Date.now();
-  try {
-    const ragPromise = searchKnowledgeBase(query);
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`RAG timeout after ${Date.now() - startTime}ms`)), timeoutMs)
-    );
-    const ragResults = await Promise.race([ragPromise, timeoutPromise]);
-    console.log(`[RAG] Succeeded in ${Date.now() - startTime}ms`);
-    const ragSources = ragResults.map((r) => ({ source: r.metadata.source, topic: r.metadata.topic }));
-    return {
-      context: ragResults.map((r) => `[Source: ${r.metadata.source}] ${r.text}`).join('\n\n'),
-      sources: ragResults.map((r) => r.metadata.source),
-      ragSources,
-    };
-  } catch (error) {
-    console.warn(`[RAG] Failed after ${Date.now() - startTime}ms:`, error);
-    return { context: '', sources: [], ragSources: [] };
-  }
-}
+const moreRecipesSchema = z.object({
+  excludeNames: z.array(z.string().trim().max(160)).max(50).default([]),
+});
+
+const expandRecipeSchema = z.object({
+  profileId: objectId,
+  recipeName: z.string().trim().min(1).max(160),
+  recipeDescription: z.string().trim().max(1000).default(''),
+});
 
 const router = Router();
 
@@ -38,11 +30,11 @@ router.use(authenticate);
 
 const recipeCache = new Map<string, { recipes: any[]; timestamp: number }>();
 
-router.get('/recipes/:profileId', async (req: Request, res: Response) => {
+router.get('/recipes/:profileId', validate({ params: z.object({ profileId: objectId }) }), async (req: Request, res: Response) => {
   try {
     const profile = await Profile.findOne({
       _id: req.params.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
@@ -93,14 +85,16 @@ Return exactly 5 recipes. Keep descriptions casual and helpful. Use emojis that 
 
     const userMessage = `Health Profile:\n${profileContext}\n\nPlease suggest 5 quick dinner ideas tailored to this person's dietary needs and preferences.`;
 
-    const claudeResponse = await queryClaude({
+    const modelResponse = await generateText({
+      userId: req.jwtUser!.id,
+      operation: 'dashboard.dinner_ideas',
+        maxOutputTokens: 1536,
       systemPrompt,
       userMessage,
     });
 
-    let recipes;
-    const parsed = parseClaudeJson<{ recipes: any[] }>(claudeResponse, { recipes: [] });
-    recipes = (parsed.recipes || []).slice(0, 5);
+    const parsed = parseJsonResponse<{ recipes: unknown[] }>(modelResponse, { recipes: [] });
+    let recipes = (parsed.recipes || []).slice(0, 5);
 
     if (recipes.length === 0) {
       recipes = [
@@ -120,18 +114,18 @@ Return exactly 5 recipes. Keep descriptions casual and helpful. Use emojis that 
   }
 });
 
-router.post('/recipes/:profileId/more', async (req: Request, res: Response) => {
+router.post('/recipes/:profileId/more', validate({ params: z.object({ profileId: objectId }), body: moreRecipesSchema }), async (req: Request, res: Response) => {
   try {
     const profile = await Profile.findOne({
       _id: req.params.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
       return;
     }
 
-    const { excludeNames = [] } = req.body;
+    const { excludeNames } = req.body as z.infer<typeof moreRecipesSchema>;
 
     const profileContext = `
       Diet Type: ${profile.dietType || 'Not specified'}
@@ -158,11 +152,19 @@ Return exactly 5 recipes.`;
 
     const userMessage = `Health Profile:\n${profileContext}\n\nPlease suggest 5 more dinner ideas.`;
 
-    const claudeResponse = await queryClaude({ systemPrompt, userMessage });
+    const modelResponse = await generateText({
+      userId: req.jwtUser!.id,
+      operation: 'dashboard.more_recipes',
+        maxOutputTokens: 1536,
 
-    let recipes;
-    const parsed = parseClaudeJson<{ recipes: any[] }>(claudeResponse, { recipes: [] });
-    recipes = (parsed.recipes || []).slice(0, 5);
+        systemPrompt,
+
+        userMessage,
+
+      });
+
+    const parsed = parseJsonResponse<{ recipes: unknown[] }>(modelResponse, { recipes: [] });
+    const recipes = (parsed.recipes || []).slice(0, 5);
 
     res.json({ recipes });
   } catch (error) {
@@ -170,9 +172,9 @@ Return exactly 5 recipes.`;
   }
 });
 
-router.post('/recipes/expand', aiRateLimiter, async (req: Request, res: Response) => {
+router.post('/recipes/expand', aiRateLimiter, validate({ body: expandRecipeSchema }), async (req: Request, res: Response) => {
   try {
-    const { profileId, recipeName, recipeDescription } = req.body;
+    const { profileId, recipeName, recipeDescription } = req.body as z.infer<typeof expandRecipeSchema>;
 
     if (!profileId || !recipeName) {
       res.status(400).json({ error: 'profileId and recipeName are required' });
@@ -181,7 +183,7 @@ router.post('/recipes/expand', aiRateLimiter, async (req: Request, res: Response
 
     const profile = await Profile.findOne({
       _id: profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
@@ -197,7 +199,7 @@ router.post('/recipes/expand', aiRateLimiter, async (req: Request, res: Response
       Activity Level: ${profile.activityLevel || 'Not specified'}
     `;
 
-    const { context: ragContext, ragSources } = await getRagContextSafely(
+    const { context: ragContext, ragSources } = await getRagContext(
       `recipes healthy cooking ${recipeName} ${profile.dietType || ''} ${profile.allergies?.join(' ') || ''}`
     );
 
@@ -232,13 +234,16 @@ Return a JSON response with this exact structure:
 
     const userMessage = `Health Profile:\n${profileContext}\n\nDinner Idea:\nName: ${recipeName}\nDescription: ${recipeDescription || 'No description provided'}\n\nPlease expand this into a full, detailed recipe with ingredients, instructions, and nutritional information.`;
 
-    const claudeResponse = await queryClaude({
+    const modelResponse = await generateText({
+      userId: req.jwtUser!.id,
+      operation: 'dashboard.recipe_expand',
+        maxOutputTokens: 1536,
       systemPrompt,
       userMessage,
       context: ragContext,
     });
 
-    const parsed = parseClaudeJson<{
+    const parsed = parseJsonResponse<{
       name: string;
       description: string;
       ingredients: string[];
@@ -248,7 +253,7 @@ Return a JSON response with this exact structure:
       serves: string;
       dietary_tags: string[];
       nutrition: { calories: string; protein: string; carbs: string; fat: string };
-    }>(claudeResponse, {
+    }>(modelResponse, {
       name: recipeName,
       description: recipeDescription || '',
       ingredients: [],
@@ -262,16 +267,16 @@ Return a JSON response with this exact structure:
 
     res.json({ recipe: parsed, ragSources: ragSources.length > 0 ? ragSources : null });
   } catch (error) {
-    console.error('Recipe expand error:', error);
+    logger.error('Recipe expansion failed', error);
     res.status(500).json({ error: 'Failed to expand recipe. Please retry.' });
   }
 });
 
-router.get('/:profileId', async (req: Request, res: Response) => {
+router.get('/:profileId', validate({ params: z.object({ profileId: objectId }) }), async (req: Request, res: Response) => {
   try {
     const profile = await Profile.findOne({
       _id: req.params.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
@@ -438,11 +443,11 @@ router.get('/:profileId', async (req: Request, res: Response) => {
 
 const tipCache = new Map<string, { tip: string; date: string }>();
 
-router.get('/tip/:profileId', async (req: Request, res: Response) => {
+router.get('/tip/:profileId', validate({ params: z.object({ profileId: objectId }) }), async (req: Request, res: Response) => {
   try {
     const profile = await Profile.findOne({
       _id: req.params.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
@@ -465,7 +470,7 @@ router.get('/tip/:profileId', async (req: Request, res: Response) => {
       Activity Level: ${profile.activityLevel || 'Not specified'}
     `;
 
-    const { context: ragContext } = await getRagContextSafely(
+    const { context: ragContext } = await getRagContext(
       `daily health tip wellness ${profile.fitnessGoal || ''} ${profile.dietType || ''}`
     );
 
@@ -482,14 +487,17 @@ Return a JSON response with this exact structure:
 
     const userMessage = `Health Profile:\n${profileContext}\n\nPlease provide a personalized daily health tip.`;
 
-    const claudeResponse = await queryClaude({
+    const modelResponse = await generateText({
+      userId: req.jwtUser!.id,
+      operation: 'dashboard.daily_tip',
+        maxOutputTokens: 1536,
       systemPrompt,
       userMessage,
       context: ragContext,
     });
 
-    const parsed = parseClaudeJson<{ tip: string }>(claudeResponse, { tip: claudeResponse });
-    const tip = parsed.tip || claudeResponse;
+    const parsed = parseJsonResponse<{ tip: string }>(modelResponse, { tip: modelResponse });
+    const tip = parsed.tip || modelResponse;
 
     tipCache.set(cacheKey, { tip, date: today });
 
@@ -499,11 +507,11 @@ Return a JSON response with this exact structure:
   }
 });
 
-router.get('/timeline/:profileId', async (req: Request, res: Response) => {
+router.get('/timeline/:profileId', validate({ params: z.object({ profileId: objectId }) }), async (req: Request, res: Response) => {
   try {
     const profile = await Profile.findOne({
       _id: req.params.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
@@ -544,11 +552,11 @@ router.get('/timeline/:profileId', async (req: Request, res: Response) => {
 
 const coachCache = new Map<string, { data: any; timestamp: number }>();
 
-router.get('/coach/:profileId', async (req: Request, res: Response) => {
+router.get('/coach/:profileId', validate({ params: z.object({ profileId: objectId }) }), async (req: Request, res: Response) => {
   try {
     const profile = await Profile.findOne({
       _id: req.params.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
@@ -641,17 +649,20 @@ Return a JSON response with this exact structure:
 
     const userMessage = `Health Profile:\n${profileContext}\n\nToday's Log:\n${todayContext}\n\nLast 7 Days:\n${weekContext || 'No data'}\n\nRecent Scans:\n${scansContext || 'No scans'}\n\nCurrent Streak: ${streak} days\nHealth Score: ${healthScoreResult.score}/100\n\nPlease provide a personalized coaching message.`;
 
-    const claudeResponse = await queryClaude({
+    const modelResponse = await generateText({
+      userId: req.jwtUser!.id,
+      operation: 'dashboard.coach',
+        maxOutputTokens: 1536,
       systemPrompt,
       userMessage,
     });
 
-    const parsed = parseClaudeJson<{ message: string; category: string; priority: string }>(
-      claudeResponse,
-      { message: claudeResponse, category: 'general', priority: 'medium' }
+    const parsed = parseJsonResponse<{ message: string; category: string; priority: string }>(
+      modelResponse,
+      { message: modelResponse, category: 'general', priority: 'medium' }
     );
     const result = {
-      message: parsed.message || claudeResponse,
+      message: parsed.message || modelResponse,
       category: parsed.category || 'general',
       priority: parsed.priority || 'medium',
     };

@@ -10,6 +10,8 @@ export interface ICommunityPost extends Document {
   dietaryTags?: string[];
   imageUrl?: string;
   likes: mongoose.Types.ObjectId[];
+  /** Denormalised length of `likes`; sorting an array field does not rank by popularity. */
+  likeCount: number;
   commentCount: number;
   status: 'published' | 'pending_review' | 'rejected';
   moderationNote?: string;
@@ -28,6 +30,7 @@ const communityPostSchema = new Schema<ICommunityPost>(
     dietaryTags: [{ type: String }],
     imageUrl: { type: String },
     likes: [{ type: Schema.Types.ObjectId, ref: 'User' }],
+    likeCount: { type: Number, default: 0, min: 0 },
     commentCount: { type: Number, default: 0 },
     status: { type: String, enum: ['published', 'pending_review', 'rejected'], default: 'published' },
     moderationNote: { type: String },
@@ -37,6 +40,8 @@ const communityPostSchema = new Schema<ICommunityPost>(
 
 communityPostSchema.index({ createdAt: -1 });
 communityPostSchema.index({ status: 1, createdAt: -1 });
+communityPostSchema.index({ status: 1, likeCount: -1, createdAt: -1 });
+communityPostSchema.index({ userId: 1, createdAt: -1 });
 
 const CommunityPost: Model<ICommunityPost> = mongoose.model<ICommunityPost>(
   'CommunityPost',

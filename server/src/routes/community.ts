@@ -1,11 +1,19 @@
 import { Router, Request, Response } from 'express';
+import mongoose from 'mongoose';
 import { z } from 'zod';
 import { authenticate } from '../middleware/auth.js';
-import { queryClaude } from '../services/claude.js';
-import { parseClaudeJson } from '../utils/parseClaudeJson.js';
+import { generateText } from '../services/llm.js';
+import { clampUntrusted } from '../services/promptSafety.js';
+import { parseJsonResponse } from '../utils/parseJsonResponse.js';
 import CommunityPost from '../models/CommunityPost.js';
 import Profile from '../models/Profile.js';
-import User from '../models/User.js';
+import { objectId, validate } from '../middleware/validate.js';
+
+const feedQuerySchema = z.object({
+  sort: z.enum(['recent', 'trending']).default('recent'),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+});
 
 const router = Router();
 
@@ -18,9 +26,13 @@ const createPostSchema = z.object({
   content: z.string().min(1).max(2000),
   condition: z.string().optional(),
   dietaryTags: z.array(z.string()).optional(),
-});
+}).strict();
 
-async function moderatePost(content: string, type: string): Promise<{ approved: boolean; note?: string }> {
+async function moderatePost(
+  content: string,
+  type: string,
+  userId: string,
+): Promise<{ approved: boolean; note?: string }> {
   try {
     const systemPrompt = `You are a content moderator for a health community. Review this post for potentially harmful medical advice.
 
@@ -35,12 +47,19 @@ Respond with ONLY the JSON object, no preamble, no explanation, no markdown fenc
 
 Return JSON: { "approved": true/false, "note": "reason if flagged" }`;
 
-    const response = await queryClaude({
+    const response = await generateText({
+      userId,
+      operation: 'community.moderate',
       systemPrompt,
-      userMessage: `Post type: ${type}\nContent: ${content}`,
+      userMessage: 'Decide whether the post in <post_content> should be published.',
+      untrusted: [
+        { label: 'post_type', content: type },
+        { label: 'post_content', content: clampUntrusted(content, 3000) },
+      ],
+      maxOutputTokens: 256,
     });
 
-    return parseClaudeJson<{ approved: boolean; note?: string }>(
+    return parseJsonResponse<{ approved: boolean; note?: string }>(
       response,
       { approved: true }
     );
@@ -49,24 +68,22 @@ Return JSON: { "approved": true/false, "note": "reason if flagged" }`;
   }
 }
 
-router.get('/feed', async (req: Request, res: Response) => {
+router.get('/feed', validate({ query: feedQuerySchema }), async (req: Request, res: Response) => {
   try {
-    const { sort = 'recent', page = '1', limit = '20' } = req.query;
-    const pageNum = parseInt(page as string);
-    const limitNum = parseInt(limit as string);
-    const skip = (pageNum - 1) * limitNum;
+    const viewerId = new mongoose.Types.ObjectId(req.jwtUser!.id);
+    const { sort, page, limit } = req.query as unknown as z.infer<typeof feedQuerySchema>;
+    const skip = (page - 1) * limit;
 
     const query: any = { status: 'published' };
     const sortOption: any = sort === 'trending'
-      ? { likes: -1, createdAt: -1 }
+      ? { likeCount: -1, createdAt: -1 }
       : { createdAt: -1 };
 
     const posts = await CommunityPost.find(query)
       .sort(sortOption)
       .skip(skip)
-      .limit(limitNum)
-      .populate('profileId', 'name avatar')
-      .populate('userId', 'email');
+      .limit(limit)
+      .populate('profileId', 'name avatar');
 
     const total = await CommunityPost.countDocuments(query);
 
@@ -78,9 +95,9 @@ router.get('/feed', async (req: Request, res: Response) => {
       condition: post.condition,
       dietaryTags: post.dietaryTags,
       imageUrl: post.imageUrl,
-      likes: post.likes.length,
+      likes: post.likeCount,
       commentCount: post.commentCount,
-      isLiked: post.likes.includes((req as any).jwtUser!.id),
+      isLiked: post.likes.some((id) => id.equals(viewerId)),
       author: {
         name: (post.profileId as any)?.name || 'Anonymous',
         avatar: (post.profileId as any)?.avatar || '👤',
@@ -88,7 +105,7 @@ router.get('/feed', async (req: Request, res: Response) => {
       createdAt: post.createdAt,
     }));
 
-    res.json({ posts: enrichedPosts, total, page: pageNum, totalPages: Math.ceil(total / limitNum) });
+    res.json({ posts: enrichedPosts, total, page, totalPages: Math.ceil(total / limit) });
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch feed' });
   }
@@ -100,17 +117,17 @@ router.post('/', async (req: Request, res: Response) => {
 
     const profile = await Profile.findOne({
       _id: data.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
       return;
     }
 
-    const moderation = await moderatePost(data.content, data.type);
+    const moderation = await moderatePost(data.content, data.type, req.jwtUser!.id);
 
     const post = await CommunityPost.create({
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
       profileId: data.profileId,
       type: data.type,
       title: data.title,
@@ -141,7 +158,7 @@ router.post('/', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/:id/like', async (req: Request, res: Response) => {
+router.post('/:id/like', validate({ params: z.object({ id: objectId }) }), async (req: Request, res: Response) => {
   try {
     const post = await CommunityPost.findById(req.params.id);
     if (!post) {
@@ -149,22 +166,25 @@ router.post('/:id/like', async (req: Request, res: Response) => {
       return;
     }
 
-    const userId = (req as any).jwtUser!.id;
-    const index = post.likes.indexOf(userId);
-    if (index > -1) {
-      post.likes.splice(index, 1);
-    } else {
+    const userId = new mongoose.Types.ObjectId(req.jwtUser!.id);
+    const index = post.likes.findIndex((id) => id.equals(userId));
+    const liking = index === -1;
+
+    if (liking) {
       post.likes.push(userId);
+    } else {
+      post.likes.splice(index, 1);
     }
+    post.likeCount = post.likes.length;
     await post.save();
 
-    res.json({ likes: post.likes.length, isLiked: index === -1 });
+    res.json({ likes: post.likeCount, isLiked: liking });
   } catch (error) {
     res.status(500).json({ error: 'Failed to toggle like' });
   }
 });
 
-router.delete('/:id', async (req: Request, res: Response) => {
+router.delete('/:id', validate({ params: z.object({ id: objectId }) }), async (req: Request, res: Response) => {
   try {
     const post = await CommunityPost.findById(req.params.id);
     if (!post) {
@@ -172,7 +192,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
       return;
     }
 
-    if (post.userId.toString() !== (req as any).jwtUser!.id) {
+    if (post.userId.toString() !== req.jwtUser!.id) {
       res.status(403).json({ error: 'Not authorized' });
       return;
     }
@@ -186,7 +206,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
 
 router.get('/my-posts', async (req: Request, res: Response) => {
   try {
-    const posts = await CommunityPost.find({ userId: (req as any).jwtUser!.id })
+    const posts = await CommunityPost.find({ userId: req.jwtUser!.id })
       .sort({ createdAt: -1 })
       .populate('profileId', 'name avatar');
 
@@ -197,7 +217,7 @@ router.get('/my-posts', async (req: Request, res: Response) => {
       content: post.content,
       status: post.status,
       moderationNote: post.moderationNote,
-      likes: post.likes.length,
+      likes: post.likeCount,
       commentCount: post.commentCount,
       author: {
         name: (post.profileId as any)?.name || 'Anonymous',

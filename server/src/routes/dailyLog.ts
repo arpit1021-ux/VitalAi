@@ -2,6 +2,19 @@ import { Router, Request, Response } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import DailyLog from '../models/DailyLog.js';
 import Profile from '../models/Profile.js';
+import { objectId, validate } from '../middleware/validate.js';
+import { z } from 'zod';
+
+const PLATE_GROUPS = ['veg', 'fruit', 'protein', 'grains', 'dairy'] as const;
+
+const waterCountSchema = z.object({ count: z.coerce.number().int().min(0).max(30) });
+const waterGoalSchema = z.object({ goal: z.coerce.number().int().min(1).max(30) });
+const challengeSchema = z.object({ completed: z.boolean() });
+const plateSchema = z.object({
+  group: z.enum(PLATE_GROUPS),
+  value: z.boolean(),
+  entry: z.string().trim().max(200).optional(),
+});
 
 const router = Router();
 
@@ -41,11 +54,11 @@ async function getOrCreateTodayLog(profileId: string): Promise<any> {
   return log;
 }
 
-router.get('/:profileId/today', async (req: Request, res: Response) => {
+router.get('/:profileId/today', validate({ params: z.object({ profileId: objectId }) }), async (req: Request, res: Response) => {
   try {
     const profile = await Profile.findOne({
       _id: req.params.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
@@ -59,18 +72,18 @@ router.get('/:profileId/today', async (req: Request, res: Response) => {
   }
 });
 
-router.put('/:profileId/water', async (req: Request, res: Response) => {
+router.put('/:profileId/water', validate({ params: z.object({ profileId: objectId }), body: waterCountSchema }), async (req: Request, res: Response) => {
   try {
     const profile = await Profile.findOne({
       _id: req.params.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
       return;
     }
 
-    const { count } = req.body;
+    const { count } = req.body as z.infer<typeof waterCountSchema>;
     if (typeof count !== 'number' || count < 0 || count > 8) {
       res.status(400).json({ error: 'Count must be a number between 0 and 8' });
       return;
@@ -86,11 +99,11 @@ router.put('/:profileId/water', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/:profileId/water/add', async (req: Request, res: Response) => {
+router.post('/:profileId/water/add', validate({ params: z.object({ profileId: objectId }) }), async (req: Request, res: Response) => {
   try {
     const profile = await Profile.findOne({
       _id: req.params.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
@@ -110,11 +123,11 @@ router.post('/:profileId/water/add', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/:profileId/water/remove', async (req: Request, res: Response) => {
+router.post('/:profileId/water/remove', validate({ params: z.object({ profileId: objectId }) }), async (req: Request, res: Response) => {
   try {
     const profile = await Profile.findOne({
       _id: req.params.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
@@ -133,18 +146,18 @@ router.post('/:profileId/water/remove', async (req: Request, res: Response) => {
   }
 });
 
-router.put('/:profileId/water/goal', async (req: Request, res: Response) => {
+router.put('/:profileId/water/goal', validate({ params: z.object({ profileId: objectId }), body: waterGoalSchema }), async (req: Request, res: Response) => {
   try {
     const profile = await Profile.findOne({
       _id: req.params.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
       return;
     }
 
-    const { goal } = req.body;
+    const { goal } = req.body as z.infer<typeof waterGoalSchema>;
     if (typeof goal !== 'number' || goal < 1 || goal > 20) {
       res.status(400).json({ error: 'Goal must be a number between 1 and 20' });
       return;
@@ -160,18 +173,18 @@ router.put('/:profileId/water/goal', async (req: Request, res: Response) => {
   }
 });
 
-router.put('/:profileId/plate', async (req: Request, res: Response) => {
+router.put('/:profileId/plate', validate({ params: z.object({ profileId: objectId }), body: plateSchema }), async (req: Request, res: Response) => {
   try {
     const profile = await Profile.findOne({
       _id: req.params.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
       return;
     }
 
-    const { group, value, entry } = req.body;
+    const { group, value, entry } = req.body as z.infer<typeof plateSchema>;
     const validGroups = ['veg', 'fruit', 'protein', 'grains', 'dairy'];
     if (!validGroups.includes(group)) {
       res.status(400).json({ error: 'Invalid plate group' });
@@ -198,18 +211,18 @@ router.put('/:profileId/plate', async (req: Request, res: Response) => {
   }
 });
 
-router.put('/:profileId/challenge', async (req: Request, res: Response) => {
+router.put('/:profileId/challenge', validate({ params: z.object({ profileId: objectId }), body: challengeSchema }), async (req: Request, res: Response) => {
   try {
     const profile = await Profile.findOne({
       _id: req.params.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
       return;
     }
 
-    const { completed } = req.body;
+    const { completed } = req.body as z.infer<typeof challengeSchema>;
     if (typeof completed !== 'boolean') {
       res.status(400).json({ error: 'Completed must be a boolean' });
       return;
@@ -233,11 +246,11 @@ router.put('/:profileId/challenge', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/:profileId/streak', async (req: Request, res: Response) => {
+router.get('/:profileId/streak', validate({ params: z.object({ profileId: objectId }) }), async (req: Request, res: Response) => {
   try {
     const profile = await Profile.findOne({
       _id: req.params.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
@@ -260,7 +273,7 @@ router.get('/:profileId/streak', async (req: Request, res: Response) => {
 
     let currentStreak = 0;
     const today = getToday();
-    let checkDate = new Date(today + 'T00:00:00Z');
+    const checkDate = new Date(today + 'T00:00:00Z');
 
     for (let i = 0; i < dates.length; i++) {
       const expected = checkDate.toISOString().split('T')[0];
@@ -293,11 +306,11 @@ router.get('/:profileId/streak', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/:profileId/activity', async (req: Request, res: Response) => {
+router.post('/:profileId/activity', validate({ params: z.object({ profileId: objectId }) }), async (req: Request, res: Response) => {
   try {
     const profile = await Profile.findOne({
       _id: req.params.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
@@ -314,11 +327,11 @@ router.post('/:profileId/activity', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/:profileId/tips', async (req: Request, res: Response) => {
+router.get('/:profileId/tips', validate({ params: z.object({ profileId: objectId }) }), async (req: Request, res: Response) => {
   try {
     const profile = await Profile.findOne({
       _id: req.params.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });

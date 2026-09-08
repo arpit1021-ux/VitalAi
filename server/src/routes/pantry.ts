@@ -1,60 +1,62 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../middleware/auth.js';
-import { searchKnowledgeBase } from '../services/rag.js';
-import { queryClaude } from '../services/claude.js';
-import { parseClaudeJson } from '../utils/parseClaudeJson.js';
+import { getRagContext } from '../services/retrieval.js';
+import { generateText } from '../services/llm.js';
+import { parseJsonResponse } from '../utils/parseJsonResponse.js';
 import PantryItem from '../models/PantryItem.js';
 import Profile from '../models/Profile.js';
-
-async function getRagContextSafely(query: string, timeoutMs = 8000): Promise<{ context: string; sources: string[]; ragSources: { source: string; topic?: string }[] }> {
-  const startTime = Date.now();
-  try {
-    const ragPromise = searchKnowledgeBase(query);
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`RAG timeout after ${Date.now() - startTime}ms`)), timeoutMs)
-    );
-    const ragResults = await Promise.race([ragPromise, timeoutPromise]);
-    console.log(`[RAG] Succeeded in ${Date.now() - startTime}ms`);
-    const ragSources = ragResults.map((r) => ({ source: r.metadata.source, topic: r.metadata.topic }));
-    return {
-      context: ragResults.map((r) => `[Source: ${r.metadata.source}] ${r.text}`).join('\n\n'),
-      sources: ragResults.map((r) => r.metadata.source),
-      ragSources,
-    };
-  } catch (error) {
-    console.warn(`[RAG] Failed after ${Date.now() - startTime}ms:`, error);
-    return { context: '', sources: [], ragSources: [] };
-  }
-}
+import { logger } from '../utils/logger.js';
+import { objectId, validate } from '../middleware/validate.js';
 
 const router = Router();
 
 router.use(authenticate);
 
-const createItemSchema = z.object({
-  profileId: z.string(),
-  name: z.string().min(1),
-  quantity: z.number().optional(),
-  unit: z.string().optional(),
-  category: z.enum(['grains', 'dairy', 'produce', 'protein', 'spices', 'other']).optional(),
-  expiryDate: z.string().optional(),
-});
+const createItemSchema = z
+  .object({
+    profileId: objectId,
+    name: z.string().trim().min(1, 'Give the item a name.').max(120),
+    quantity: z.number().positive().max(100_000).optional(),
+    unit: z.string().trim().max(24).optional(),
+    category: z.enum(['grains', 'dairy', 'produce', 'protein', 'spices', 'other']).optional(),
+    expiryDate: z.coerce.date().optional(),
+  })
+  .strict();
+
+// The set of updatable fields is closed, and profileId is not among them:
+// moving an item between profiles would bypass the ownership check performed
+// when it was created.
+const updateItemSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120).optional(),
+    quantity: z.number().positive().max(100_000).optional(),
+    unit: z.string().trim().max(24).optional(),
+    category: z.enum(['grains', 'dairy', 'produce', 'protein', 'spices', 'other']).optional(),
+    expiryDate: z.coerce.date().optional(),
+  })
+  .strict()
+  .refine((value) => Object.keys(value).length > 0, 'Nothing to update.');
+
+const recipeRequestSchema = z
+  .object({
+    profileId: objectId,
+    scope: z.enum(['me', 'family']).default('me'),
+    selectedItemIds: z.array(objectId).max(100).optional(),
+  })
+  .strict();
 
 router.post('/', async (req: Request, res: Response) => {
   try {
     const data = createItemSchema.parse(req.body);
 
-    const profile = await Profile.findOne({ _id: data.profileId, userId: (req as any).jwtUser!.id });
+    const profile = await Profile.findOne({ _id: data.profileId, userId: req.jwtUser!.id });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
       return;
     }
 
-    const item = await PantryItem.create({
-      ...data,
-      expiryDate: data.expiryDate ? new Date(data.expiryDate) : undefined,
-    });
+    const item = await PantryItem.create(data);
 
     res.status(201).json({ item });
   } catch (error) {
@@ -66,11 +68,11 @@ router.post('/', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/:profileId', async (req: Request, res: Response) => {
+router.get('/:profileId', validate({ params: z.object({ profileId: objectId }) }), async (req: Request, res: Response) => {
   try {
     const profile = await Profile.findOne({
       _id: req.params.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
@@ -84,7 +86,10 @@ router.get('/:profileId', async (req: Request, res: Response) => {
   }
 });
 
-router.put('/:id', async (req: Request, res: Response) => {
+router.put(
+  '/:id',
+  validate({ params: z.object({ id: objectId }), body: updateItemSchema }),
+  async (req: Request, res: Response) => {
   try {
     const item = await PantryItem.findById(req.params.id);
     if (!item) {
@@ -94,14 +99,14 @@ router.put('/:id', async (req: Request, res: Response) => {
 
     const profile = await Profile.findOne({
       _id: item.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(403).json({ error: 'Not authorized to update this item' });
       return;
     }
 
-    const updatedItem = await PantryItem.findByIdAndUpdate(req.params.id, req.body, {
+    const updatedItem = await PantryItem.findByIdAndUpdate(req.params.id, { $set: req.body }, {
       new: true,
       runValidators: true,
     });
@@ -111,7 +116,7 @@ router.put('/:id', async (req: Request, res: Response) => {
   }
 });
 
-router.delete('/:id', async (req: Request, res: Response) => {
+router.delete('/:id', validate({ params: z.object({ id: objectId }) }), async (req: Request, res: Response) => {
   try {
     const item = await PantryItem.findById(req.params.id);
     if (!item) {
@@ -121,7 +126,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
 
     const profile = await Profile.findOne({
       _id: item.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(403).json({ error: 'Not authorized to delete this item' });
@@ -135,11 +140,11 @@ router.delete('/:id', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/recipes', async (req: Request, res: Response) => {
+router.post('/recipes', validate({ body: recipeRequestSchema }), async (req: Request, res: Response) => {
   try {
-    const { profileId, scope = 'me', selectedItemIds } = req.body;
+    const { profileId, scope, selectedItemIds } = req.body as z.infer<typeof recipeRequestSchema>;
 
-    const profile = await Profile.findOne({ _id: profileId, userId: (req as any).jwtUser!.id });
+    const profile = await Profile.findOne({ _id: profileId, userId: req.jwtUser!.id });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
       return;
@@ -158,7 +163,7 @@ router.post('/recipes', async (req: Request, res: Response) => {
     let scopeNote: string;
 
     if (scope === 'family') {
-      const allProfiles = await Profile.find({ userId: (req as any).jwtUser!.id });
+      const allProfiles = await Profile.find({ userId: req.jwtUser!.id });
       const profilesContext = allProfiles.map((p) => `
         - ${p.name}: Diet: ${p.dietType || 'Not specified'}, Allergies: ${p.allergies?.join(', ') || 'None'}, Conditions: ${p.conditions?.join(', ') || 'None'}
       `).join('');
@@ -176,7 +181,7 @@ router.post('/recipes', async (req: Request, res: Response) => {
       scopeNote = `Generate a recipe tailored specifically for ${profile.name}.`;
     }
 
-    const { context: ragContext, ragSources } = await getRagContextSafely(
+    const { context: ragContext, ragSources } = await getRagContext(
       `recipes healthy cooking ${profile.dietType || ''} ${items.map(i => i.name).join(' ')}`
     );
 
@@ -213,17 +218,23 @@ IMPORTANT: The "missing_ingredients" field must list ONLY ingredients that are N
 
     const userMessage = `${profileContext}\n\nAvailable Pantry Items:\n${pantryList || 'No items in pantry'}\n\nPlease suggest 1 healthy recipe using the available ingredients. List any missing ingredients separately.`;
 
-    const claudeResponse = await queryClaude({
+    const modelResponse = await generateText({
+
+      userId: req.jwtUser!.id,
+
+      operation: 'pantry.recipes',
+
+        maxOutputTokens: 2048,
       systemPrompt,
       userMessage,
       context: ragContext,
     });
 
-    const parsed = parseClaudeJson<{ recipes: any[] }>(claudeResponse, { recipes: [] });
+    const parsed = parseJsonResponse<{ recipes: any[] }>(modelResponse, { recipes: [] });
 
     res.json({ recipes: parsed.recipes || [], ragSources: ragSources.length > 0 ? ragSources : null });
   } catch (error: any) {
-    console.error('Recipe generation error:', error?.message || error);
+    logger.error('Pantry recipe generation failed', error);
     const errMsg = String(error?.message || error || '');
     if (errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED')) {
       res.status(500).json({ error: 'AI service is busy. Please wait a moment and try again.' });

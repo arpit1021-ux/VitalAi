@@ -26,6 +26,8 @@ const familyInsightSchema = new Schema<IFamilyInsight>(
   { timestamps: true }
 );
 
+familyInsightSchema.index({ userId: 1, generatedAt: -1 });
+
 const FamilyInsight: Model<IFamilyInsight> = mongoose.model<IFamilyInsight>(
   'FamilyInsight',
   familyInsightSchema

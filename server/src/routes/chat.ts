@@ -1,46 +1,45 @@
 import { Router, Request, Response } from 'express';
 import { authenticate } from '../middleware/auth.js';
-import { searchKnowledgeBase } from '../services/rag.js';
-import { queryClaude } from '../services/claude.js';
+import { getRagContext } from '../services/retrieval.js';
+import { generateText } from '../services/llm.js';
+import { assessUntrusted, clampUntrusted } from '../services/promptSafety.js';
+import { logger } from '../utils/logger.js';
 import ChatSession from '../models/ChatSession.js';
 import Profile from '../models/Profile.js';
+import { objectId, validate } from '../middleware/validate.js';
+import { z } from 'zod';
+
+const SUPPORTED_LANGUAGES = [
+  'english', 'hindi', 'tamil', 'bengali', 'telugu', 'marathi', 'kannada',
+] as const;
+
+const messageSchema = z.object({
+  sessionId: objectId,
+  content: z
+    .string({ required_error: 'Type a message first.' })
+    .trim()
+    .min(1, 'Type a message first.')
+    .max(4000, 'Messages are limited to 4000 characters.'),
+  // An open string here would be interpolated into the system prompt.
+  language: z.enum(SUPPORTED_LANGUAGES).default('english'),
+});
 
 const router = Router();
 
 router.use(authenticate);
 
-async function getRagContextSafely(query: string, timeoutMs = 8000): Promise<{ context: string; sources: string[]; ragSources: { source: string; topic?: string }[] }> {
-  const startTime = Date.now();
+router.post('/session', validate({ body: z.object({ profileId: objectId }) }), async (req: Request, res: Response) => {
   try {
-    const ragPromise = searchKnowledgeBase(query);
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`RAG timeout after ${Date.now() - startTime}ms`)), timeoutMs)
-    );
-    const ragResults = await Promise.race([ragPromise, timeoutPromise]);
-    console.log(`[RAG] Succeeded in ${Date.now() - startTime}ms`);
-    const ragSources = ragResults.map((r) => ({ source: r.metadata.source, topic: r.metadata.topic }));
-    return {
-      context: ragResults.map((r) => `[Source: ${r.metadata.source}] ${r.text}`).join('\n\n'),
-      sources: ragResults.map((r) => r.metadata.source),
-      ragSources,
-    };
-  } catch (error) {
-    console.warn(`[RAG] Failed after ${Date.now() - startTime}ms:`, error);
-    return { context: '', sources: [], ragSources: [] };
-  }
-}
+    const { profileId } = req.body as { profileId: string };
 
-router.post('/session', async (req: Request, res: Response) => {
-  try {
-    const { profileId } = req.body;
-
-    const profile = await Profile.findOne({ _id: profileId, userId: (req as any).jwtUser!.id });
+    const profile = await Profile.findOne({ _id: profileId, userId: req.jwtUser!.id });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
       return;
     }
 
     const session = await ChatSession.create({
+      userId: req.jwtUser!.id,
       profileId,
       title: 'New Chat',
     });
@@ -51,11 +50,11 @@ router.post('/session', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/sessions/:profileId', async (req: Request, res: Response) => {
+router.get('/sessions/:profileId', validate({ params: z.object({ profileId: objectId }) }), async (req: Request, res: Response) => {
   try {
     const profile = await Profile.findOne({
       _id: req.params.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
@@ -74,7 +73,7 @@ router.get('/sessions/:profileId', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/session/:sessionId', async (req: Request, res: Response) => {
+router.get('/session/:sessionId', validate({ params: z.object({ sessionId: objectId }) }), async (req: Request, res: Response) => {
   try {
     const session = await ChatSession.findById(req.params.sessionId);
     if (!session) {
@@ -84,7 +83,7 @@ router.get('/session/:sessionId', async (req: Request, res: Response) => {
 
     const profile = await Profile.findOne({
       _id: session.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(403).json({ error: 'Not authorized to access this session' });
@@ -97,9 +96,9 @@ router.get('/session/:sessionId', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/message', async (req: Request, res: Response) => {
+router.post('/message', validate({ body: messageSchema }), async (req: Request, res: Response) => {
   try {
-    const { sessionId, content, language } = req.body;
+    const { sessionId, content, language } = req.body as z.infer<typeof messageSchema>;
 
     const session = await ChatSession.findById(sessionId);
     if (!session) {
@@ -109,75 +108,89 @@ router.post('/message', async (req: Request, res: Response) => {
 
     const profile = await Profile.findOne({
       _id: session.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
       return;
     }
 
-    session.messages.push({
-      role: 'user',
-      content,
-      timestamp: new Date(),
-    });
+    // History is captured before the new message is appended, so the current
+    // turn is not duplicated as both history and the live user message.
+    const history = session.messages.slice(-10).map((message) => ({
+      role: message.role,
+      content: message.content,
+    }));
 
-    const { context: ragContext, sources, ragSources } = await getRagContextSafely(content);
+    session.messages.push({ role: 'user', content, timestamp: new Date() });
 
-    const recentMessages = session.messages.slice(-10);
-    const conversationContext = recentMessages
-      .map((m) => `${m.role}: ${m.content}`)
-      .join('\n');
+    const { context: ragContext, sources, ragSources } = await getRagContext(content);
 
-    const familyContext = '';
+    // Profile fields are typed by the user, so they are untrusted input even
+    // though they belong to the person asking. They used to be interpolated
+    // into the system prompt, where anything they contained read as an
+    // instruction.
+    const profileContext = [
+      `Name: ${profile.name}`,
+      `Age: ${profile.age ?? 'Not specified'}`,
+      `Diet type: ${profile.dietType ?? 'Not specified'}`,
+      `Allergies: ${profile.allergies?.join(', ') || 'None'}`,
+      `Conditions: ${profile.conditions?.join(', ') || 'None'}`,
+      `Medications: ${profile.medications?.map((m) => `${m.name} ${m.dosage}`).join(', ') || 'None'}`,
+      `Fitness goal: ${profile.fitnessGoal ?? 'Not specified'}`,
+      `Activity level: ${profile.activityLevel ?? 'Not specified'}`,
+    ].join('\n');
 
-    const profileContext = `
-      Name: ${profile.name}
-      Age: ${profile.age || 'Not specified'}
-      Diet Type: ${profile.dietType || 'Not specified'}
-      Allergies: ${profile.allergies?.join(', ') || 'None'}
-      Conditions: ${profile.conditions?.join(', ') || 'None'}
-      Medications: ${profile.medications?.map(m => `${m.name} ${m.dosage}`).join(', ') || 'None'}
-      Fitness Goal: ${profile.fitnessGoal || 'Not specified'}
-      Activity Level: ${profile.activityLevel || 'Not specified'}
-    `;
+    const safety = assessUntrusted(content);
+    if (safety.suspicious) {
+      logger.warn('Chat message matched injection heuristics', {
+        profileId: String(profile._id),
+        signals: safety.signals,
+      });
+    }
 
-    const languageInstruction = language && language !== 'english'
-      ? `\n\nIMPORTANT: The user prefers to communicate in ${language}. Respond entirely in ${language}. Use simple, clear language appropriate for a general audience.`
-      : '\n\nIf the user writes in a regional language (Hindi, Tamil, Bengali, etc.), respond in that same language. Detect the language automatically.';
+    // `language` is a validated enum, so this is the only interpolation that
+    // reaches the system prompt.
+    const languageInstruction =
+      language !== 'english'
+        ? `The user prefers ${language}. Respond entirely in ${language}, in simple, clear language.`
+        : 'If the user writes in a regional language (Hindi, Tamil, Bengali and so on), reply in that same language.';
 
     const systemPrompt = `You are VitalAI, a warm, caring health companion — like a knowledgeable grandmother who cares deeply about your wellbeing. You explain things clearly without medical jargon. You are supportive, patient, and encouraging.
 
 Your personality:
 - Warm and caring, like a family elder who wants the best for you
 - Use simple, everyday language — avoid medical jargon
-- Be encouraging: "That's a great choice!" or "You're doing wonderfully"
-- Gently warn when something might be harmful: "Hmm, I'd be careful with that..."
+- Be encouraging, and gently warn when something might be harmful
 - Use relatable analogies and examples
 - If you don't know something, say so honestly
 
 CRITICAL RULES:
 - You are NOT a doctor. Never diagnose, prescribe, or replace professional medical advice.
 - Always recommend consulting a healthcare professional for personal medical decisions.
-- Frame all health advice as "research suggests", "generally recommended", "many people find that..."
-- Home remedies should be clearly labelled: "This is a traditional home remedy, not medical advice."
-- When discussing family members, refer to them by name from the profile context.
+- Frame health advice as "research suggests", "generally recommended", "many people find that..."
+- Label home remedies clearly: "This is a traditional home remedy, not medical advice."
+- Refer to family members by the name given in the profile block.
 
-User's Health Profile:
-${profileContext}
+${languageInstruction}`;
 
-Recent Conversation:
-${conversationContext}${languageInstruction}`;
-
-    const claudeResponse = await queryClaude({
+    const modelResponse = await generateText({
       systemPrompt,
-      userMessage: content,
+      userMessage: 'Reply to the message in <user_message>, taking the profile into account.',
       context: ragContext,
+      untrusted: [
+        { label: 'health_profile', content: profileContext },
+        { label: 'user_message', content: clampUntrusted(content, 4000) },
+      ],
+      history,
+      userId: req.jwtUser!.id,
+      operation: 'chat.message',
+      maxOutputTokens: 1024,
     });
 
     session.messages.push({
       role: 'assistant',
-      content: claudeResponse,
+      content: modelResponse,
       timestamp: new Date(),
       ragUsed: sources.length > 0,
       ragSourceCount: sources.length,
@@ -190,7 +203,7 @@ ${conversationContext}${languageInstruction}`;
     await session.save();
 
     res.json({
-      response: claudeResponse,
+      response: modelResponse,
       sessionId: session._id,
       sources,
       ragSources: ragSources.length > 0 ? ragSources : null,
@@ -200,7 +213,7 @@ ${conversationContext}${languageInstruction}`;
   }
 });
 
-router.delete('/session/:sessionId', async (req: Request, res: Response) => {
+router.delete('/session/:sessionId', validate({ params: z.object({ sessionId: objectId }) }), async (req: Request, res: Response) => {
   try {
     const session = await ChatSession.findById(req.params.sessionId);
     if (!session) {
@@ -210,7 +223,7 @@ router.delete('/session/:sessionId', async (req: Request, res: Response) => {
 
     const profile = await Profile.findOne({
       _id: session.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(403).json({ error: 'Not authorized to delete this session' });

@@ -1,11 +1,13 @@
 import { Router, Request, Response } from 'express';
 import { authenticate } from '../middleware/auth.js';
-import { queryClaude } from '../services/claude.js';
-import { parseClaudeJson } from '../utils/parseClaudeJson.js';
+import { generateText } from '../services/llm.js';
+import { parseJsonResponse } from '../utils/parseJsonResponse.js';
 import Profile from '../models/Profile.js';
 import DailyLog from '../models/DailyLog.js';
 import ScanHistory from '../models/ScanHistory.js';
 import HealthInsight from '../models/HealthInsight.js';
+import { objectId, validate } from '../middleware/validate.js';
+import { z } from 'zod';
 
 const router = Router();
 
@@ -19,11 +21,11 @@ function getWeekOf(date: Date): string {
   return d.toISOString().split('T')[0];
 }
 
-router.get('/:profileId', async (req: Request, res: Response) => {
+router.get('/:profileId', validate({ params: z.object({ profileId: objectId }) }), async (req: Request, res: Response) => {
   try {
     const profile = await Profile.findOne({
       _id: req.params.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
@@ -44,11 +46,11 @@ router.get('/:profileId', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/:profileId/generate', async (req: Request, res: Response) => {
+router.post('/:profileId/generate', validate({ params: z.object({ profileId: objectId }) }), async (req: Request, res: Response) => {
   try {
     const profile = await Profile.findOne({
       _id: req.params.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
@@ -109,16 +111,22 @@ Return a JSON response with this exact structure:
 
     const userMessage = `Health Profile:\n${profileContext}\n\nRecent Daily Logs (last 7 days):\n${logsContext || 'No logs available'}\n\nRecent Scans:\n${scansContext || 'No scans available'}\n\nPlease analyze this data and provide personalized health insights.`;
 
-    const claudeResponse = await queryClaude({
+    const modelResponse = await generateText({
+
+      userId: req.jwtUser!.id,
+
+      operation: 'health_insights.generate',
+
+        maxOutputTokens: 1024,
       systemPrompt,
       userMessage,
     });
 
-    const parsed = parseClaudeJson<{ insights: string[] }>(
-      claudeResponse,
-      { insights: [claudeResponse] }
+    const parsed = parseJsonResponse<{ insights: string[] }>(
+      modelResponse,
+      { insights: [modelResponse] }
     );
-    const insights: string[] = Array.isArray(parsed.insights) ? parsed.insights : [claudeResponse];
+    const insights: string[] = Array.isArray(parsed.insights) ? parsed.insights : [modelResponse];
 
     const stored = await HealthInsight.create({
       profileId: profile._id,
