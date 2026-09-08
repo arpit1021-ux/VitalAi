@@ -1,10 +1,9 @@
 import { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Search, Filter, Trash2, ScanLine, Pill, FlaskConical, Clock, SortAsc } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { Search, Trash2, ScanLine, Pill, FlaskConical, Clock, SortAsc } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useProfileStore } from '@/stores/profileStore';
 import { scansExtended } from '@/lib/api';
-import { scans as scansApi } from '@/lib/api';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';

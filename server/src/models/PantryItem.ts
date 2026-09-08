@@ -41,6 +41,8 @@ const pantryItemSchema = new Schema<IPantryItem>(
   { timestamps: true }
 );
 
+pantryItemSchema.index({ profileId: 1, name: 1 });
+
 const PantryItem: Model<IPantryItem> = mongoose.model<IPantryItem>(
   'PantryItem',
   pantryItemSchema

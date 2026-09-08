@@ -5,7 +5,19 @@ export interface IUser extends Document {
   email: string;
   passwordHash?: string;
   googleId?: string;
-  refreshToken?: string;
+  /** Incremented to invalidate every outstanding token for this user. */
+  authVersion: number;
+  /**
+   * What the user agreed to, and when. Health data is only processed once this
+   * is recorded; the version lets a later policy change require fresh consent.
+   */
+  consent?: {
+    version: string;
+    healthDataAcceptedAt: Date;
+  };
+  /** SHA-256 of the active password-reset token. Single use. */
+  passwordResetTokenHash?: string;
+  passwordResetExpiresAt?: Date;
   profiles: mongoose.Types.ObjectId[];
   createdAt: Date;
   updatedAt: Date;
@@ -26,11 +38,30 @@ const userSchema = new Schema<IUser>(
       select: false,
     },
     googleId: {
+      // Sparse so the many local-only accounts with no googleId do not all
+      // collide on null. Declaring it here creates the index; a separate
+      // schema.index() call for the same field is a duplicate.
       type: String,
+      index: true,
       sparse: true,
+      unique: true,
     },
-    refreshToken: {
+    consent: {
+      version: { type: String },
+      healthDataAcceptedAt: { type: Date },
+    },
+    passwordResetTokenHash: {
       type: String,
+      select: false,
+    },
+    passwordResetExpiresAt: {
+      type: Date,
+      select: false,
+    },
+    authVersion: {
+      type: Number,
+      default: 0,
+      required: true,
     },
     profiles: [
       {

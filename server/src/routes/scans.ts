@@ -1,52 +1,85 @@
 import { Router, Request, Response } from 'express';
 import { authenticate } from '../middleware/auth.js';
-import { upload, uploadToCloudinary } from '../services/upload.js';
-import { searchKnowledgeBase } from '../services/rag.js';
-import { queryClaude, queryClaudeWithImage } from '../services/claude.js';
-import { parseClaudeJson } from '../utils/parseClaudeJson.js';
+import { assertIsImage, upload, uploadToCloudinary } from '../services/upload.js';
+import { getRagContext } from '../services/retrieval.js';
+import { generateText, generateTextFromImage } from '../services/llm.js';
+import { parseValidatedJson } from '../utils/parseJsonResponse.js';
+import { assessUntrusted, clampUntrusted } from '../services/promptSafety.js';
+import {
+  foodVerdictSchema,
+  medicineVerdictSchema,
+  supplementVerdictSchema,
+} from '../schemas/aiOutputs.js';
+import { AppError } from '../utils/AppError.js';
+import { logger } from '../utils/logger.js';
 import Profile from '../models/Profile.js';
 import ScanHistory from '../models/ScanHistory.js';
+import { objectId, searchTerm, validate } from '../middleware/validate.js';
+import { z } from 'zod';
 
-async function getRagContextSafely(query: string, timeoutMs = 8000): Promise<{ context: string; sources: string[]; ragSources: { source: string; topic?: string }[] }> {
-  const startTime = Date.now();
-  try {
-    const ragPromise = searchKnowledgeBase(query);
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`RAG timeout after ${Date.now() - startTime}ms`)), timeoutMs)
-    );
-    const ragResults = await Promise.race([ragPromise, timeoutPromise]);
-    console.log(`[RAG] Succeeded in ${Date.now() - startTime}ms`);
-    const ragSources = ragResults.map((r) => ({ source: r.metadata.source, topic: r.metadata.topic }));
-    return {
-      context: ragResults.map((r) => `[Source: ${r.metadata.source}] ${r.text}`).join('\n\n'),
-      sources: ragResults.map((r) => r.metadata.source),
-      ragSources,
-    };
-  } catch (error) {
-    console.warn(`[RAG] Failed after ${Date.now() - startTime}ms:`, error);
-    return { context: '', sources: [], ragSources: [] };
-  }
-}
-
+/**
+ * Storing the photo is a convenience; the analysis is the product. A storage
+ * failure must never discard a verdict the user already waited for.
+ */
 async function uploadImageSafely(file: Express.Multer.File | undefined): Promise<string | undefined> {
   if (!file) return undefined;
   try {
     return await uploadToCloudinary(file);
   } catch (error) {
-    console.warn('Image upload to Cloudinary failed, continuing without image:', error);
+    logger.warn('Image upload failed; saving analysis without the photo', {
+      reason: (error as Error).message,
+    });
     return undefined;
   }
 }
+
+const TEXT_ONLY_SYSTEM_PROMPT = `You are analyzing a food ingredient list provided as text. Evaluate each ingredient for safety based on the user's health profile.
+
+Respond with ONLY the JSON object, no preamble, no explanation, no markdown fencing.
+
+Return a JSON response with this exact structure:
+{
+  "verdict": "safe" | "caution" | "avoid",
+  "summary": "brief summary of the analysis",
+  "product_name": null,
+  "extracted_ingredients": null,
+  "extracted_nutrition": null,
+  "identified_items": null,
+  "flagged_ingredients": [{"name": "ingredient", "reason": "why flagged", "severity": "low|medium|high"}],
+  "positive_nutrients": [{"name": "nutrient", "benefit": "why good"}],
+  "allergen_warnings": ["any allergens detected or relevant to user"],
+  "recommendation": "overall recommendation",
+  "confidence": "high|medium|low",
+  "sources_used": ["list of sources referenced"]
+}`;
+
+const scanBodySchema = z.object({
+  profileId: objectId,
+  // OCR output. Bounded so a malformed client cannot post an unbounded prompt,
+  // and because everything here is fed to a model that charges per token.
+  extractedText: z.string().max(20_000).optional().default(''),
+});
+
+const historyQuerySchema = z.object({
+  type: z.enum(['food', 'medicine', 'supplement']).optional(),
+  search: searchTerm.optional(),
+  // These are the values the history screen's sort control emits. It
+  // previously sent 'newest'/'oldest' while this route compared against
+  // 'date-asc'/'date-desc', so 'Oldest first' silently did nothing.
+  sort: z.enum(['newest', 'oldest']).default('newest'),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
 
 const router = Router();
 
 router.use(authenticate);
 
-router.post('/food', upload.single('image'), async (req: Request, res: Response) => {
+router.post('/food', upload.single('image'), validate({ body: scanBodySchema }), async (req: Request, res: Response) => {
   try {
-    const { extractedText, profileId } = req.body;
+    const { extractedText, profileId } = req.body as z.infer<typeof scanBodySchema>;
 
-    const profile = await Profile.findOne({ _id: profileId, userId: (req as any).jwtUser!.id });
+    const profile = await Profile.findOne({ _id: profileId, userId: req.jwtUser!.id });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
       return;
@@ -61,13 +94,24 @@ router.post('/food', upload.single('image'), async (req: Request, res: Response)
       Medications: ${profile.medications?.map(m => `${m.name} ${m.dosage}`).join(', ') || 'None'}
     `;
 
-    const hasImage = req.file && req.file.buffer;
+    const labelSafety = assessUntrusted(extractedText ?? '');
+    if (labelSafety.suspicious) {
+      // Worth knowing about: a label whose text tries to steer the analysis is
+      // either a crafted image or a genuine adversarial product.
+      logger.warn('Scanned label matched injection heuristics', {
+        profileId: String(profile._id),
+        signals: labelSafety.signals,
+      });
+    }
+
+    const hasImage = Boolean(req.file?.buffer.length);
+    if (hasImage) assertIsImage(req.file!);
 
     const searchQuery = hasImage
       ? `food nutrition health safety ${profile.dietType || ''} ${profile.allergies?.join(' ') || ''} ${profile.conditions?.join(' ') || ''}`
       : `food ingredients safety ${extractedText} ${profile.dietType || ''} ${profile.allergies?.join(' ') || ''}`;
 
-    const { context: ragContext, sources, ragSources } = await getRagContextSafely(searchQuery);
+    const { context: ragContext, sources, ragSources } = await getRagContext(searchQuery);
 
     const systemPrompt = hasImage
       ? `You are an expert food analyst and nutritionist. You can see an image provided by the user. Your job is to identify everything in the image and provide a thorough health analysis.
@@ -105,66 +149,86 @@ Return a JSON response with this exact structure:
   "confidence": "high|medium|low",
   "sources_used": ["list of sources referenced"]
 }`
-      : `You are analyzing a food ingredient list provided as text. Evaluate each ingredient for safety based on the user's health profile.
-
-Respond with ONLY the JSON object, no preamble, no explanation, no markdown fencing.
-
-Return a JSON response with this exact structure:
-{
-  "verdict": "safe" | "caution" | "avoid",
-  "summary": "brief summary of the analysis",
-  "product_name": null,
-  "extracted_ingredients": null,
-  "extracted_nutrition": null,
-  "identified_items": null,
-  "flagged_ingredients": [{"name": "ingredient", "reason": "why flagged", "severity": "low|medium|high"}],
-  "positive_nutrients": [{"name": "nutrient", "benefit": "why good"}],
-  "allergen_warnings": ["any allergens detected or relevant to user"],
-  "recommendation": "overall recommendation",
-  "confidence": "high|medium|low",
-  "sources_used": ["list of sources referenced"]
-}`;
+      : TEXT_ONLY_SYSTEM_PROMPT;
 
     let userMessage: string;
 
     if (hasImage) {
-      userMessage = `Health Profile:\n${profileContext}\n\nAnalyze this image thoroughly. Identify all food items visible — whether it's a packaged product with a label, raw vegetables and fruits, a cooked meal, or anything else. For each item, explain what it is, its nutritional value, and how it fits the user's health profile. Be as detailed and specific as Gemini would be.`;
+      userMessage =
+        'Analyse the attached image against the profile in <health_profile>. Identify every food item visible — a packaged product, raw ingredients, or a cooked meal — and for each give its nutritional value and how it fits this profile.';
     } else {
-      userMessage = `Health Profile:\n${profileContext}\n\nExtracted Food Label Text:\n${extractedText}\n\nPlease analyze this food label considering the user's health profile, allergies, and dietary needs.`;
+      userMessage =
+        'Analyse the label in <label_text> against the profile in <health_profile>.';
     }
 
-    let claudeResponse: string;
+    let modelResponse: string;
 
     if (hasImage) {
-      console.log(`[Food Scan] Using vision mode. Image size: ${req.file!.buffer.length} bytes, MIME: ${req.file!.mimetype}`);
-      try {
-        claudeResponse = await queryClaudeWithImage({
-          systemPrompt,
-          userMessage,
-          context: ragContext,
-          imageBuffer: req.file!.buffer,
-          mimeType: req.file!.mimetype,
-        });
-      } catch (visionError) {
-        console.error('[Food Scan] Vision API failed, falling back to text-only:', visionError);
-        claudeResponse = await queryClaude({
-          systemPrompt: systemPrompt.replace('You have been provided with an image of the food product. Carefully examine the image to read the ingredient list, nutritional information, and any other relevant details from the product label.', 'The user uploaded an image but text extraction failed. Please provide general analysis based on the health profile.'),
-          userMessage: `Health Profile:\n${profileContext}\n\nThe user attempted to scan a food product but the image could not be processed. Please provide general dietary advice based on their health profile.`,
+      logger.info('Food scan using vision', {
+        profileId: String(profile._id),
+        bytes: req.file!.buffer.length,
+        mimeType: req.file!.mimetype,
+      });
+
+      const vision = await generateTextFromImage({
+
+        userId: req.jwtUser!.id,
+
+        operation: 'scan.food_vision',
+        systemPrompt,
+        userMessage,
+        context: ragContext,
+        imageBuffer: req.file!.buffer,
+        mimeType: req.file!.mimetype,
+        // Scoping the vision cache to the profile keeps one user's analysis
+        // from ever being served to another.
+        cacheScope: String(profile._id),
+      });
+
+      if (vision.usedVision) {
+        modelResponse = vision.text;
+      } else {
+        // The configured provider has no vision path. Rather than sending a
+        // vision prompt to a text-only model, ask for a profile-based answer
+        // and mark the confidence down.
+        modelResponse = await generateText({
+          userId: req.jwtUser!.id,
+          operation: 'scan.food_text_fallback',
+          systemPrompt: TEXT_ONLY_SYSTEM_PROMPT,
+          userMessage: `Health Profile:\n${profileContext}\n\nThe photo could not be analysed. Give general guidance for this profile and set confidence to "low".`,
           context: ragContext,
         });
       }
     } else {
-      claudeResponse = await queryClaude({
+      modelResponse = await generateText({
+        userId: req.jwtUser!.id,
+        operation: 'scan.food_text',
+        maxOutputTokens: 2048,
+        untrusted: [
+          { label: 'health_profile', content: profileContext },
+          { label: 'label_text', content: clampUntrusted(extractedText ?? '', 8000) },
+        ],
         systemPrompt,
         userMessage,
         context: ragContext,
       });
     }
 
-    const parsed = parseClaudeJson<{ verdict: string; summary: string }>(
-      claudeResponse,
-      { verdict: 'unknown', summary: claudeResponse }
-    );
+    const parsed = parseValidatedJson(modelResponse, foodVerdictSchema, {
+      operation: 'scan.food',
+    });
+
+    if (!parsed) {
+      // Storing an unvalidated blob under aiVerdict would put a malformed —
+      // possibly injected — value into a record the user reads as a health
+      // judgement. Fail visibly instead.
+      throw new AppError({
+        status: 502,
+        code: 'MODEL_OUTPUT_INVALID',
+        message: 'The analysis came back in a form we could not read.',
+        action: 'Try the scan again. If it keeps failing, take a clearer photo of the label.',
+      });
+    }
 
     const imageUrl = await uploadImageSafely(req.file);
 
@@ -173,6 +237,7 @@ Return a JSON response with this exact structure:
       : extractedText;
 
     await ScanHistory.create({
+      userId: req.jwtUser!.id,
       profileId,
       type: 'food',
       imageUrl,
@@ -185,7 +250,7 @@ Return a JSON response with this exact structure:
 
     res.json({ verdict: parsed, ragSources: ragSources.length > 0 ? ragSources : null });
   } catch (error: any) {
-    console.error('[Food Scan Error]', error?.message || error);
+    logger.error('Food scan failed', error);
     let userMessage = 'Food scan analysis failed. Please retry.';
     const errMsg = String(error?.message || error || '');
     if (errMsg.includes('503') || errMsg.includes('UNAVAILABLE')) {
@@ -199,11 +264,11 @@ Return a JSON response with this exact structure:
   }
 });
 
-router.post('/medicine', upload.single('image'), async (req: Request, res: Response) => {
+router.post('/medicine', upload.single('image'), validate({ body: scanBodySchema }), async (req: Request, res: Response) => {
   try {
-    const { extractedText, profileId } = req.body;
+    const { extractedText, profileId } = req.body as z.infer<typeof scanBodySchema>;
 
-    const profile = await Profile.findOne({ _id: profileId, userId: (req as any).jwtUser!.id });
+    const profile = await Profile.findOne({ _id: profileId, userId: req.jwtUser!.id });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
       return;
@@ -217,7 +282,7 @@ router.post('/medicine', upload.single('image'), async (req: Request, res: Respo
       Allergies: ${profile.allergies?.join(', ') || 'None'}
     `;
 
-    const { context: ragContext, sources, ragSources } = await getRagContextSafely(
+    const { context: ragContext, sources, ragSources } = await getRagContext(
       `drug interactions medicine ${extractedText} ${profile.medications?.map(m => m.name).join(' ') || ''}`
     );
 
@@ -235,20 +300,33 @@ Return a JSON response with this exact structure:
 
     const userMessage = `Health Profile:\n${profileContext}\n\nExtracted Medicine Text:\n${extractedText}\n\nPlease analyze this medication considering the user's current medications and health conditions.`;
 
-    const claudeResponse = await queryClaude({
+    const modelResponse = await generateText({
+
+      userId: req.jwtUser!.id,
+
+      operation: 'scan.medicine',
       systemPrompt,
       userMessage,
       context: ragContext,
     });
 
-    const parsed = parseClaudeJson<{ general_advice: string }>(
-      claudeResponse,
-      { general_advice: claudeResponse }
-    );
+    const parsed = parseValidatedJson(modelResponse, medicineVerdictSchema, {
+      operation: 'scan.medicine',
+    });
+
+    if (!parsed) {
+      throw new AppError({
+        status: 502,
+        code: 'MODEL_OUTPUT_INVALID',
+        message: 'The interaction check came back in a form we could not read.',
+        action: 'Try again. If it keeps failing, ask a pharmacist about this medication.',
+      });
+    }
 
     const imageUrl = await uploadImageSafely(req.file);
 
     await ScanHistory.create({
+      userId: req.jwtUser!.id,
       profileId,
       type: 'medicine',
       imageUrl,
@@ -265,11 +343,11 @@ Return a JSON response with this exact structure:
   }
 });
 
-router.post('/supplement', upload.single('image'), async (req: Request, res: Response) => {
+router.post('/supplement', upload.single('image'), validate({ body: scanBodySchema }), async (req: Request, res: Response) => {
   try {
-    const { extractedText, profileId } = req.body;
+    const { extractedText, profileId } = req.body as z.infer<typeof scanBodySchema>;
 
-    const profile = await Profile.findOne({ _id: profileId, userId: (req as any).jwtUser!.id });
+    const profile = await Profile.findOne({ _id: profileId, userId: req.jwtUser!.id });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
       return;
@@ -285,7 +363,7 @@ router.post('/supplement', upload.single('image'), async (req: Request, res: Res
       Medications: ${profile.medications?.map(m => `${m.name} ${m.dosage}`).join(', ') || 'None'}
     `;
 
-    const { context: ragContext, sources, ragSources } = await getRagContextSafely(
+    const { context: ragContext, sources, ragSources } = await getRagContext(
       `supplement ingredients safety ${extractedText} ${profile.fitnessGoal || ''}`
     );
 
@@ -304,20 +382,33 @@ Return a JSON response with this exact structure:
 
     const userMessage = `Health Profile:\n${profileContext}\n\nExtracted Supplement Text:\n${extractedText}\n\nPlease analyze this supplement considering the user's fitness goals, health conditions, and dietary needs.`;
 
-    const claudeResponse = await queryClaude({
+    const modelResponse = await generateText({
+
+      userId: req.jwtUser!.id,
+
+      operation: 'scan.supplement',
       systemPrompt,
       userMessage,
       context: ragContext,
     });
 
-    const parsed = parseClaudeJson<{ usage_protocol: string }>(
-      claudeResponse,
-      { usage_protocol: claudeResponse }
-    );
+    const parsed = parseValidatedJson(modelResponse, supplementVerdictSchema, {
+      operation: 'scan.supplement',
+    });
+
+    if (!parsed) {
+      throw new AppError({
+        status: 502,
+        code: 'MODEL_OUTPUT_INVALID',
+        message: 'The supplement analysis came back in a form we could not read.',
+        action: 'Try the scan again with a clearer photo of the ingredients panel.',
+      });
+    }
 
     const imageUrl = await uploadImageSafely(req.file);
 
     await ScanHistory.create({
+      userId: req.jwtUser!.id,
       profileId,
       type: 'supplement',
       imageUrl,
@@ -334,13 +425,16 @@ Return a JSON response with this exact structure:
   }
 });
 
-router.get('/history/:profileId', async (req: Request, res: Response) => {
+router.get(
+  '/history/:profileId',
+  validate({ params: z.object({ profileId: objectId }), query: historyQuerySchema }),
+  async (req: Request, res: Response) => {
   try {
-    const { type, search, sort, page = '1', limit = '20' } = req.query;
+    const { type, search, sort, page, limit } = req.query as unknown as z.infer<typeof historyQuerySchema>;
 
     const profile = await Profile.findOne({
       _id: req.params.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
@@ -349,48 +443,38 @@ router.get('/history/:profileId', async (req: Request, res: Response) => {
 
     const filter: Record<string, any> = { profileId: req.params.profileId };
 
-    if (type && ['food', 'medicine', 'supplement'].includes(type as string)) {
-      filter.type = type;
-    }
+    if (type) filter.type = type;
 
-    if (search && typeof search === 'string') {
-      filter.$or = [
-        { extractedText: { $regex: search, $options: 'i' } },
-        { 'aiVerdict.summary': { $regex: search, $options: 'i' } },
-        { 'aiVerdict.general_advice': { $regex: search, $options: 'i' } },
-      ];
-    }
+    // $text uses the index declared on the model. The previous $regex scanned
+    // the whole collection and accepted user-supplied regex metacharacters.
+    if (search) filter.$text = { $search: search };
 
-    const pageNum = Math.max(1, parseInt(page as string, 10) || 1);
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit as string, 10) || 20));
-    const skip = (pageNum - 1) * limitNum;
+    const skip = (page - 1) * limit;
 
-    const sortObj: Record<string, 1 | -1> = sort === 'date-asc'
-      ? { createdAt: 1 }
-      : { createdAt: -1 };
+    const sortObj: Record<string, 1 | -1> = sort === 'oldest' ? { createdAt: 1 } : { createdAt: -1 };
 
     const total = await ScanHistory.countDocuments(filter);
     const scans = await ScanHistory.find(filter)
       .sort(sortObj)
       .skip(skip)
-      .limit(limitNum);
+      .limit(limit);
 
     res.json({
       scans,
       total,
-      page: pageNum,
-      totalPages: Math.ceil(total / limitNum),
+      page,
+      totalPages: Math.ceil(total / limit),
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch scan history' });
   }
 });
 
-router.delete('/history/all/:profileId', async (req: Request, res: Response) => {
+router.delete('/history/all/:profileId', validate({ params: z.object({ profileId: objectId }) }), async (req: Request, res: Response) => {
   try {
     const profile = await Profile.findOne({
       _id: req.params.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
@@ -405,7 +489,7 @@ router.delete('/history/all/:profileId', async (req: Request, res: Response) => 
   }
 });
 
-router.delete('/history/:id', async (req: Request, res: Response) => {
+router.delete('/history/:id', validate({ params: z.object({ id: objectId }) }), async (req: Request, res: Response) => {
   try {
     const scan = await ScanHistory.findById(req.params.id);
     if (!scan) {
@@ -415,7 +499,7 @@ router.delete('/history/:id', async (req: Request, res: Response) => {
 
     const profile = await Profile.findOne({
       _id: scan.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(403).json({ error: 'Not authorized to delete this scan' });

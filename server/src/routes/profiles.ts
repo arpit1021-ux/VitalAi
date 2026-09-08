@@ -3,12 +3,16 @@ import { z } from 'zod';
 import Profile from '../models/Profile.js';
 import User from '../models/User.js';
 import { authenticate } from '../middleware/auth.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
+import { objectId, validate } from '../middleware/validate.js';
+import { forbidden, notFound } from '../utils/AppError.js';
+import { env } from '../config/env.js';
 
 const router = Router();
 
 router.use(authenticate);
 
-const createProfileSchema = z.object({
+const profileFields = {
   name: z.string().min(1),
   age: z.number().optional(),
   gender: z.enum(['male', 'female', 'other']).optional(),
@@ -19,41 +23,58 @@ const createProfileSchema = z.object({
   medications: z.array(z.object({ name: z.string(), dosage: z.string() })).optional(),
   fitnessGoal: z.enum(['weight-loss', 'muscle-gain', 'maintenance', 'endurance']).optional(),
   activityLevel: z.enum(['sedentary', 'lightly-active', 'active', 'very-active']).optional(),
-});
+} as const;
+
+const createProfileSchema = z.object(profileFields).strict();
+
+// Every field optional, but the set of permitted fields is closed.
+const updateProfileSchema = z
+  .object({ ...profileFields, name: profileFields.name.optional() })
+  .strict()
+  .refine((value) => Object.keys(value).length > 0, 'Nothing to update.');
+
+const profileParams = z.object({ id: objectId });
 
 router.get('/', async (req: Request, res: Response) => {
   try {
-    const profiles = await Profile.find({ userId: (req as any).jwtUser!.id });
+    const profiles = await Profile.find({ userId: req.jwtUser!.id });
     res.json({ profiles });
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch profiles' });
   }
 });
 
-router.post('/', async (req: Request, res: Response) => {
-  try {
-    const data = createProfileSchema.parse(req.body);
-    const profile = await Profile.create({ ...data, userId: (req as any).jwtUser!.id });
+router.post(
+  '/',
+  validate({ body: createProfileSchema }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const data = req.body as z.infer<typeof createProfileSchema>;
 
-    await User.findByIdAndUpdate((req as any).jwtUser!.id, {
-      $push: { profiles: profile._id },
-    });
+    // A profile is where health data enters the system, so this is the point
+    // at which consent has to exist. Checking it here rather than at sign-up
+    // means a policy change can require it again without locking anyone out of
+    // data they have already stored.
+    const account = await User.findById(req.jwtUser!.id, { consent: 1 });
+    if (account?.consent?.version !== env.CONSENT_VERSION) {
+      throw forbidden(
+        'Your consent to health data processing is needed before creating a profile.',
+        'Review and accept the current privacy terms, then try again.',
+      );
+    }
+
+    const profile = await Profile.create({ ...data, userId: req.jwtUser!.id });
+
+    await User.findByIdAndUpdate(req.jwtUser!.id, { $push: { profiles: profile._id } });
 
     res.status(201).json({ profile });
-  } catch (error) {
-    if (error instanceof z.ZodError) {
-      res.status(400).json({ error: error.errors[0].message });
-      return;
-    }
-    res.status(500).json({ error: 'Failed to create profile' });
-  }
-});
+  }),
+);
 
-router.get('/:id', async (req: Request, res: Response) => {
+router.get('/:id', validate({ params: profileParams }), async (req: Request, res: Response) => {
   try {
     const profile = await Profile.findOne({
       _id: req.params.id,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
@@ -65,35 +86,41 @@ router.get('/:id', async (req: Request, res: Response) => {
   }
 });
 
-router.put('/:id', async (req: Request, res: Response) => {
-  try {
-    const profile = await Profile.findOneAndUpdate(
-      { _id: req.params.id, userId: (req as any).jwtUser!.id },
-      req.body,
-      { new: true, runValidators: true }
-    );
-    if (!profile) {
-      res.status(404).json({ error: 'Profile not found' });
-      return;
-    }
-    res.json({ profile });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to update profile' });
-  }
-});
+router.put(
+  '/:id',
+  validate({ params: profileParams, body: updateProfileSchema }),
+  asyncHandler(async (req: Request, res: Response) => {
+    // Loaded and saved rather than updated in place, for two reasons: an
+    // update query bypasses the pre('save') hook that encrypts the health
+    // fields, and assigning only allowlisted keys keeps a caller from reaching
+    // fields the schema never meant to expose — the shape the Mongoose
+    // prototype-pollution advisory describes.
+    const profile = await Profile.findOne({ _id: req.params.id, userId: req.jwtUser!.id });
+    if (!profile) throw notFound('That profile');
 
-router.delete('/:id', async (req: Request, res: Response) => {
+    const updates = req.body as Partial<Record<keyof typeof profileFields, unknown>>;
+    for (const [field, value] of Object.entries(updates)) {
+      profile.set(field, value);
+    }
+
+    await profile.save();
+
+    res.json({ profile });
+  }),
+);
+
+router.delete('/:id', validate({ params: profileParams }), async (req: Request, res: Response) => {
   try {
     const profile = await Profile.findOne({
       _id: req.params.id,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
       return;
     }
 
-    const profileCount = await Profile.countDocuments({ userId: (req as any).jwtUser!.id });
+    const profileCount = await Profile.countDocuments({ userId: req.jwtUser!.id });
     if (profileCount <= 1) {
       res.status(400).json({ error: 'Cannot delete your only profile. Create another profile first.' });
       return;
@@ -101,10 +128,10 @@ router.delete('/:id', async (req: Request, res: Response) => {
 
     await Profile.findOneAndDelete({
       _id: req.params.id,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
 
-    await User.findByIdAndUpdate((req as any).jwtUser!.id, {
+    await User.findByIdAndUpdate(req.jwtUser!.id, {
       $pull: { profiles: profile._id },
     });
 

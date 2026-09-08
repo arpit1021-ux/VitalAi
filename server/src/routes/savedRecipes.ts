@@ -3,6 +3,13 @@ import { z } from 'zod';
 import { authenticate } from '../middleware/auth.js';
 import SavedRecipe from '../models/SavedRecipe.js';
 import Profile from '../models/Profile.js';
+import { objectId, searchTerm, validate } from '../middleware/validate.js';
+
+const listQuerySchema = z.object({
+  diet: z.string().trim().max(40).optional(),
+  search: searchTerm.optional(),
+  sort: z.enum(['recent', 'oldest', 'name']).default('recent'),
+});
 
 const router = Router();
 
@@ -28,25 +35,27 @@ const createRecipeSchema = z.object({
   source: z.enum(['dinner-ideas', 'pantry', 'manual']).optional(),
 });
 
-router.get('/:profileId', async (req: Request, res: Response) => {
+router.get('/:profileId', validate({ params: z.object({ profileId: objectId }), query: listQuerySchema }), async (req: Request, res: Response) => {
   try {
     const profile = await Profile.findOne({
       _id: req.params.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
       return;
     }
 
-    const { diet, search, sort } = req.query;
+    const { diet, search, sort } = req.query as unknown as z.infer<typeof listQuerySchema>;
     const query: any = { profileId: req.params.profileId };
 
     if (diet && diet !== 'all') {
-      query.dietaryTags = { $in: [diet as string] };
+      query.dietaryTags = { $in: [diet] };
     }
     if (search) {
-      query.name = { $regex: search as string, $options: 'i' };
+      // searchTerm has already stripped regex metacharacters, so this cannot
+      // be used to inject a pathological pattern.
+      query.name = { $regex: search, $options: 'i' };
     }
 
     let sortOption: any = { createdAt: -1 };
@@ -66,7 +75,7 @@ router.post('/', async (req: Request, res: Response) => {
 
     const profile = await Profile.findOne({
       _id: data.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
@@ -93,7 +102,7 @@ router.post('/', async (req: Request, res: Response) => {
   }
 });
 
-router.delete('/:id', async (req: Request, res: Response) => {
+router.delete('/:id', validate({ params: z.object({ id: objectId }) }), async (req: Request, res: Response) => {
   try {
     const recipe = await SavedRecipe.findById(req.params.id);
     if (!recipe) {
@@ -103,7 +112,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
 
     const profile = await Profile.findOne({
       _id: recipe.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(403).json({ error: 'Not authorized' });

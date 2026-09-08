@@ -1,5 +1,3 @@
-import { calculateProfileCompletion } from './profileCompletion.js';
-
 export interface HealthScoreResult {
   score: number | null;
   hasData: boolean;
@@ -15,13 +13,14 @@ export interface HealthScoreResult {
 }
 
 export function calculateHealthScore(data: {
-  profile: any;
+  /** Accepted for call-site symmetry with the other scorers; not read here. */
+  profile?: unknown;
   todayLog: any;
   recentScans: any[];
   streak: number;
   weeklyScans: number;
 }): HealthScoreResult {
-  const { profile, todayLog, recentScans, streak, weeklyScans } = data;
+  const { todayLog, recentScans, streak, weeklyScans } = data;
 
   const hasAnyData = (todayLog && todayLog.waterCount > 0) || recentScans.length > 0 || streak > 0;
 

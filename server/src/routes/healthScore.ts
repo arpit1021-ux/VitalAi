@@ -4,16 +4,18 @@ import Profile from '../models/Profile.js';
 import DailyLog from '../models/DailyLog.js';
 import ScanHistory from '../models/ScanHistory.js';
 import { calculateHealthScore } from '../utils/healthScore.js';
+import { objectId, validate } from '../middleware/validate.js';
+import { z } from 'zod';
 
 const router = Router();
 
 router.use(authenticate);
 
-router.get('/:profileId', async (req: Request, res: Response) => {
+router.get('/:profileId', validate({ params: z.object({ profileId: objectId }) }), async (req: Request, res: Response) => {
   try {
     const profile = await Profile.findOne({
       _id: req.params.profileId,
-      userId: (req as any).jwtUser!.id,
+      userId: req.jwtUser!.id,
     });
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });

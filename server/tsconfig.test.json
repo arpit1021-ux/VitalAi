@@ -1,0 +1,11 @@
+{
+  "//": "Typecheck configuration. Covers tests as well as src; the build config deliberately does not, so test files never reach dist. rootDir is widened because tests sit alongside src rather than inside it.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "declaration": false,
+    "declarationMap": false
+  },
+  "include": ["src/**/*", "tests/**/*"]
+}

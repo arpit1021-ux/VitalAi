@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChefHat, SkipForward, ArrowRight } from 'lucide-react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { dashboardExtended } from '@/lib/api';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -61,11 +61,11 @@ function SkeletonLoader() {
 
 export default function DinnerIdeasCarousel({ profileId, loading }: DinnerIdeasCarouselProps) {
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const [currentIndex, setCurrentIndex] = useState(0);
   const [direction, setDirection] = useState(1);
   const [allRecipes, setAllRecipes] = useState<Recipe[]>([]);
   const [isFetchingMore, setIsFetchingMore] = useState(false);
+  const [loadMoreFailed, setLoadMoreFailed] = useState(false);
   const hasFetchedRef = useRef(false);
 
   const { data, isLoading } = useQuery({
@@ -83,6 +83,7 @@ export default function DinnerIdeasCarousel({ profileId, loading }: DinnerIdeasC
 
   const fetchMore = useCallback(async () => {
     if (isFetchingMore || !profileId) return;
+    setLoadMoreFailed(false);
     setIsFetchingMore(true);
     try {
       const excludeNames = allRecipes.map((r) => r.name);
@@ -92,6 +93,10 @@ export default function DinnerIdeasCarousel({ profileId, loading }: DinnerIdeasC
         setAllRecipes((prev) => [...prev, ...newRecipes]);
       }
     } catch {
+      // Silently swallowing this left the carousel simply not advancing, with
+      // no indication that anything had gone wrong. The existing ideas stay on
+      // screen; only the attempt to fetch more is reported.
+      setLoadMoreFailed(true);
     } finally {
       setIsFetchingMore(false);
     }
@@ -226,8 +231,18 @@ export default function DinnerIdeasCarousel({ profileId, loading }: DinnerIdeasC
           </p>
         )}
         {isFetchingMore && (
-          <p className="text-center text-xs text-text-muted mt-1">
-            Loading more recipes...
+          <p className="text-center text-xs text-text-muted mt-1">Finding more ideas…</p>
+        )}
+        {loadMoreFailed && !isFetchingMore && (
+          <p role="status" className="text-center text-xs text-text-muted mt-1">
+            Couldn&apos;t load more ideas.{' '}
+            <button
+              type="button"
+              onClick={() => fetchMore()}
+              className="underline underline-offset-2 hover:text-text-primary rounded focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+            >
+              Try again
+            </button>
           </p>
         )}
       </CardContent>

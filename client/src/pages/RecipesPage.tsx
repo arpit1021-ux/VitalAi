@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChefHat, Search, Trash2, Filter, Clock, Bookmark, Plus } from 'lucide-react';
+import { ChefHat, Search, Trash2, Clock, Bookmark } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useProfileStore } from '@/stores/profileStore';
 import { savedRecipes } from '@/lib/api';
-import { Button } from '@/components/ui/button';
+
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';

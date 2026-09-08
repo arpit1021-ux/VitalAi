@@ -110,9 +110,9 @@ export default function ProfileSetupPage() {
     setShowDeleteConfirm(null);
   };
 
-  const canDelete = (profileId: string) => {
-    return profiles.length > 1;
-  };
+  // Deleting the last profile would leave the account with nowhere to store
+  // health data, so one must always remain.
+  const canDelete = () => profiles.length > 1;
 
   return (
     <div className="min-h-screen bg-background p-4 lg:p-8">
@@ -136,7 +136,7 @@ export default function ProfileSetupPage() {
                     >
                       <Pencil className="h-3.5 w-3.5 text-text-muted" />
                     </button>
-                    {canDelete(profile._id) ? (
+                    {canDelete() ? (
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
