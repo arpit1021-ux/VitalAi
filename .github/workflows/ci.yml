@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A newer push to the same branch makes the previous run irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '20.11'
+
+jobs:
+  server:
+    name: Server
+    runs-on: ubuntu-latest
+
+    services:
+      mongodb:
+        image: mongo:7
+        ports: ['27017:27017']
+        options: >-
+          --health-cmd "mongosh --eval 'db.adminCommand({ping:1})'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install
+        working-directory: server
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: server
+        run: npm run typecheck
+
+      - name: Lint
+        working-directory: server
+        run: npm run lint
+
+      - name: Test
+        working-directory: server
+        run: npm test
+        env:
+          # The suite drops its database on start, so the name must say what it
+          # is; the harness refuses to run against anything without "test" in it.
+          TEST_MONGODB_URI: mongodb://127.0.0.1:27017/vitalai-test
+          NODE_ENV: test
+          # Values the schema requires at import time. None are real: no test
+          # here reaches a provider, and a CI job must never hold a live key.
+          JWT_SECRET: 0000000000000000000000000000000000000000000000000000000000000000
+          JWT_REFRESH_SECRET: 1111111111111111111111111111111111111111111111111111111111111111
+          ENCRYPTION_KEY: 2222222222222222222222222222222222222222222222222222222222222222
+          MONGODB_URI: mongodb://127.0.0.1:27017/vitalai-test
+          APP_URL: http://localhost:5173
+          API_URL: http://localhost:5000
+          CORS_ORIGINS: http://localhost:5173
+          GEMINI_API_KEY: ci-not-a-real-key
+          PINECONE_API_KEY: ci-not-a-real-key
+
+  client:
+    name: Client
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install
+        working-directory: client
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: client
+        run: npm run typecheck
+
+      - name: Lint
+        working-directory: client
+        run: npm run lint
+
+      - name: Build
+        working-directory: client
+        run: npm run build
+        env:
+          VITE_API_URL: http://localhost:5000/api
+
+      - name: Check the bundle carries no credentials
+        working-directory: client
+        run: |
+          if grep -rEl 'AIza[0-9A-Za-z_-]{30,}|pcsk_[0-9A-Za-z_-]{20,}|mongodb\+srv://' dist/; then
+            echo "::error::A credential-shaped string reached the built bundle."
+            exit 1
+          fi
+          echo "No credentials found in dist/."
