@@ -4,6 +4,8 @@ import { authenticate } from '../middleware/auth.js';
 import SavedRecipe from '../models/SavedRecipe.js';
 import Profile from '../models/Profile.js';
 import { objectId, searchTerm, validate } from '../middleware/validate.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
+import { conflict, forbidden, notFound } from '../utils/AppError.js';
 
 const listQuerySchema = z.object({
   diet: z.string().trim().max(40).optional(),
@@ -35,39 +37,34 @@ const createRecipeSchema = z.object({
   source: z.enum(['dinner-ideas', 'pantry', 'manual']).optional(),
 });
 
-router.get('/:profileId', validate({ params: z.object({ profileId: objectId }), query: listQuerySchema }), async (req: Request, res: Response) => {
-  try {
-    const profile = await Profile.findOne({
-      _id: req.params.profileId,
-      userId: req.jwtUser!.id,
-    });
-    if (!profile) {
-      res.status(404).json({ error: 'Profile not found' });
-      return;
-    }
-
-    const { diet, search, sort } = req.query as unknown as z.infer<typeof listQuerySchema>;
-    const query: any = { profileId: req.params.profileId };
-
-    if (diet && diet !== 'all') {
-      query.dietaryTags = { $in: [diet] };
-    }
-    if (search) {
-      // searchTerm has already stripped regex metacharacters, so this cannot
-      // be used to inject a pathological pattern.
-      query.name = { $regex: search, $options: 'i' };
-    }
-
-    let sortOption: any = { createdAt: -1 };
-    if (sort === 'oldest') sortOption = { createdAt: 1 };
-    if (sort === 'name') sortOption = { name: 1 };
-
-    const recipes = await SavedRecipe.find(query).sort(sortOption);
-    res.json({ recipes });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch recipes' });
+router.get('/:profileId', validate({ params: z.object({ profileId: objectId }), query: listQuerySchema }), asyncHandler(async (req: Request, res: Response) => {
+  const profile = await Profile.findOne({
+    _id: req.params.profileId,
+    userId: req.jwtUser!.id,
+  });
+  if (!profile) {
+    throw notFound('That profile');
   }
-});
+
+  const { diet, search, sort } = req.query as unknown as z.infer<typeof listQuerySchema>;
+  const query: any = { profileId: req.params.profileId };
+
+  if (diet && diet !== 'all') {
+    query.dietaryTags = { $in: [diet] };
+  }
+  if (search) {
+    // searchTerm has already stripped regex metacharacters, so this cannot
+    // be used to inject a pathological pattern.
+    query.name = { $regex: search, $options: 'i' };
+  }
+
+  let sortOption: any = { createdAt: -1 };
+  if (sort === 'oldest') sortOption = { createdAt: 1 };
+  if (sort === 'name') sortOption = { name: 1 };
+
+  const recipes = await SavedRecipe.find(query).sort(sortOption);
+  res.json({ recipes });
+}));
 
 router.post('/', async (req: Request, res: Response) => {
   try {
@@ -78,8 +75,7 @@ router.post('/', async (req: Request, res: Response) => {
       userId: req.jwtUser!.id,
     });
     if (!profile) {
-      res.status(404).json({ error: 'Profile not found' });
-      return;
+      throw notFound('That profile');
     }
 
     const existing = await SavedRecipe.findOne({
@@ -87,8 +83,7 @@ router.post('/', async (req: Request, res: Response) => {
       name: data.name,
     });
     if (existing) {
-      res.status(400).json({ error: 'Recipe already saved' });
-      return;
+      throw conflict('That recipe is already saved.', 'Open it from your saved recipes.');
     }
 
     const recipe = await SavedRecipe.create(data);
@@ -102,28 +97,22 @@ router.post('/', async (req: Request, res: Response) => {
   }
 });
 
-router.delete('/:id', validate({ params: z.object({ id: objectId }) }), async (req: Request, res: Response) => {
-  try {
-    const recipe = await SavedRecipe.findById(req.params.id);
-    if (!recipe) {
-      res.status(404).json({ error: 'Recipe not found' });
-      return;
-    }
-
-    const profile = await Profile.findOne({
-      _id: recipe.profileId,
-      userId: req.jwtUser!.id,
-    });
-    if (!profile) {
-      res.status(403).json({ error: 'Not authorized' });
-      return;
-    }
-
-    await SavedRecipe.findByIdAndDelete(req.params.id);
-    res.json({ message: 'Recipe removed' });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to delete recipe' });
+router.delete('/:id', validate({ params: z.object({ id: objectId }) }), asyncHandler(async (req: Request, res: Response) => {
+  const recipe = await SavedRecipe.findById(req.params.id);
+  if (!recipe) {
+    throw notFound('That saved recipe');
   }
-});
+
+  const profile = await Profile.findOne({
+    _id: recipe.profileId,
+    userId: req.jwtUser!.id,
+  });
+  if (!profile) {
+    throw forbidden('That was created by someone else.');
+  }
+
+  await SavedRecipe.findByIdAndDelete(req.params.id);
+  res.json({ message: 'Recipe removed' });
+}));
 
 export default router;

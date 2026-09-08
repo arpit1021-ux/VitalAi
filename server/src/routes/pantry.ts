@@ -8,6 +8,8 @@ import PantryItem from '../models/PantryItem.js';
 import Profile from '../models/Profile.js';
 import { logger } from '../utils/logger.js';
 import { objectId, validate } from '../middleware/validate.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
+import { forbidden, notFound } from '../utils/AppError.js';
 
 const router = Router();
 
@@ -52,8 +54,7 @@ router.post('/', async (req: Request, res: Response) => {
 
     const profile = await Profile.findOne({ _id: data.profileId, userId: req.jwtUser!.id });
     if (!profile) {
-      res.status(404).json({ error: 'Profile not found' });
-      return;
+      throw notFound('That profile');
     }
 
     const item = await PantryItem.create(data);
@@ -68,77 +69,60 @@ router.post('/', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/:profileId', validate({ params: z.object({ profileId: objectId }) }), async (req: Request, res: Response) => {
-  try {
-    const profile = await Profile.findOne({
-      _id: req.params.profileId,
-      userId: req.jwtUser!.id,
-    });
-    if (!profile) {
-      res.status(404).json({ error: 'Profile not found' });
-      return;
-    }
-
-    const items = await PantryItem.find({ profileId: req.params.profileId });
-    res.json({ items });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch pantry items' });
+router.get('/:profileId', validate({ params: z.object({ profileId: objectId }) }), asyncHandler(async (req: Request, res: Response) => {
+  const profile = await Profile.findOne({
+    _id: req.params.profileId,
+    userId: req.jwtUser!.id,
+  });
+  if (!profile) {
+    throw notFound('That profile');
   }
-});
+
+  const items = await PantryItem.find({ profileId: req.params.profileId });
+  res.json({ items });
+}));
 
 router.put(
   '/:id',
   validate({ params: z.object({ id: objectId }), body: updateItemSchema }),
-  async (req: Request, res: Response) => {
-  try {
-    const item = await PantryItem.findById(req.params.id);
-    if (!item) {
-      res.status(404).json({ error: 'Item not found' });
-      return;
-    }
-
-    const profile = await Profile.findOne({
-      _id: item.profileId,
-      userId: req.jwtUser!.id,
-    });
-    if (!profile) {
-      res.status(403).json({ error: 'Not authorized to update this item' });
-      return;
-    }
-
-    const updatedItem = await PantryItem.findByIdAndUpdate(req.params.id, { $set: req.body }, {
-      new: true,
-      runValidators: true,
-    });
-    res.json({ item: updatedItem });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to update item' });
+  asyncHandler(async (req: Request, res: Response) => {
+  const item = await PantryItem.findById(req.params.id);
+  if (!item) {
+    throw notFound('That pantry item');
   }
-});
 
-router.delete('/:id', validate({ params: z.object({ id: objectId }) }), async (req: Request, res: Response) => {
-  try {
-    const item = await PantryItem.findById(req.params.id);
-    if (!item) {
-      res.status(404).json({ error: 'Item not found' });
-      return;
-    }
-
-    const profile = await Profile.findOne({
-      _id: item.profileId,
-      userId: req.jwtUser!.id,
-    });
-    if (!profile) {
-      res.status(403).json({ error: 'Not authorized to delete this item' });
-      return;
-    }
-
-    await PantryItem.findByIdAndDelete(req.params.id);
-    res.json({ message: 'Item deleted' });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to delete item' });
+  const profile = await Profile.findOne({
+    _id: item.profileId,
+    userId: req.jwtUser!.id,
+  });
+  if (!profile) {
+    throw forbidden('That pantry item belongs to another profile.');
   }
-});
+
+  const updatedItem = await PantryItem.findByIdAndUpdate(req.params.id, { $set: req.body }, {
+    new: true,
+    runValidators: true,
+  });
+  res.json({ item: updatedItem });
+}));
+
+router.delete('/:id', validate({ params: z.object({ id: objectId }) }), asyncHandler(async (req: Request, res: Response) => {
+  const item = await PantryItem.findById(req.params.id);
+  if (!item) {
+    throw notFound('That pantry item');
+  }
+
+  const profile = await Profile.findOne({
+    _id: item.profileId,
+    userId: req.jwtUser!.id,
+  });
+  if (!profile) {
+    throw forbidden('That pantry item belongs to another profile.');
+  }
+
+  await PantryItem.findByIdAndDelete(req.params.id);
+  res.json({ message: 'Item deleted' });
+}));
 
 router.post('/recipes', validate({ body: recipeRequestSchema }), async (req: Request, res: Response) => {
   try {
@@ -146,8 +130,7 @@ router.post('/recipes', validate({ body: recipeRequestSchema }), async (req: Req
 
     const profile = await Profile.findOne({ _id: profileId, userId: req.jwtUser!.id });
     if (!profile) {
-      res.status(404).json({ error: 'Profile not found' });
-      return;
+      throw notFound('That profile');
     }
 
     const query: any = { profileId };
