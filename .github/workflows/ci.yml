@@ -59,9 +59,11 @@ jobs:
           NODE_ENV: test
           # Values the schema requires at import time. None are real: no test
           # here reaches a provider, and a CI job must never hold a live key.
-          JWT_SECRET: 0000000000000000000000000000000000000000000000000000000000000000
-          JWT_REFRESH_SECRET: 1111111111111111111111111111111111111111111111111111111111111111
-          ENCRYPTION_KEY: 2222222222222222222222222222222222222222222222222222222222222222
+          # Quoted, and containing letters: an unquoted all-digit scalar is a
+          # YAML number, which reaches the process shortened and fails the schema.
+          JWT_SECRET: 'ci-jwt-secret-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+          JWT_REFRESH_SECRET: 'ci-refresh-secret-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+          ENCRYPTION_KEY: 'c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6'
           # Must differ from TEST_MONGODB_URI: the harness refuses to drop the
           # database the application is configured to use.
           MONGODB_URI: mongodb://127.0.0.1:27017/vitalai
