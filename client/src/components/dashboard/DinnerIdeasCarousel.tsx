@@ -1,11 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChefHat, SkipForward, ArrowRight } from 'lucide-react';
+import { ChefHat, SkipForward, ArrowRight, Clock } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { dashboardExtended } from '@/lib/api';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { ErrorState } from '@/components/shared/ErrorState';
+import { describeError, isCancellation } from '@/lib/errors';
 
 interface Recipe {
   name: string;
@@ -16,7 +18,6 @@ interface Recipe {
 
 interface DinnerIdeasCarouselProps {
   profileId: string;
-  loading?: boolean;
 }
 
 function EmptyState() {
@@ -59,7 +60,7 @@ function SkeletonLoader() {
   );
 }
 
-export default function DinnerIdeasCarousel({ profileId, loading }: DinnerIdeasCarouselProps) {
+export default function DinnerIdeasCarousel({ profileId }: DinnerIdeasCarouselProps) {
   const navigate = useNavigate();
   const [currentIndex, setCurrentIndex] = useState(0);
   const [direction, setDirection] = useState(1);
@@ -68,7 +69,7 @@ export default function DinnerIdeasCarousel({ profileId, loading }: DinnerIdeasC
   const [loadMoreFailed, setLoadMoreFailed] = useState(false);
   const hasFetchedRef = useRef(false);
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error, isFetching, refetch } = useQuery({
     queryKey: ['recipes', profileId],
     queryFn: () => dashboardExtended.getRecipes(profileId).then((r) => r.data),
     enabled: !!profileId,
@@ -111,8 +112,21 @@ export default function DinnerIdeasCarousel({ profileId, loading }: DinnerIdeasC
 
   const recipes = allRecipes.length > 0 ? allRecipes : [];
 
-  if (loading || isLoading) {
+  if (isLoading) {
     return <SkeletonLoader />;
+  }
+
+  // Without this the carousel showed "No dinner ideas yet" when the request
+  // had in fact failed — an outage rendered as an empty result, which is the
+  // one thing an empty state must never mean.
+  if (error && !isCancellation(error) && recipes.length === 0) {
+    return (
+      <Card className="border-indigo-500/20">
+        <CardContent className="p-5">
+          <ErrorState error={describeError(error)} onRetry={() => refetch()} retrying={isFetching} />
+        </CardContent>
+      </Card>
+    );
   }
 
   if (recipes.length === 0) {
@@ -182,8 +196,8 @@ export default function DinnerIdeasCarousel({ profileId, loading }: DinnerIdeasC
               </span>
               <p className="text-base font-semibold text-text-primary mb-1">{currentRecipe.name}</p>
               <p className="text-sm text-text-muted leading-relaxed max-w-[250px]">{currentRecipe.description}</p>
-              <p className="text-xs text-text-muted mt-2 flex items-center gap-1">
-                <span>⏱️</span> {currentRecipe.prepTime}
+              <p className="text-xs text-text-muted mt-2 flex items-center gap-1.5">
+                <Clock className="h-3 w-3" aria-hidden="true" /> {currentRecipe.prepTime}
               </p>
             </motion.div>
           </AnimatePresence>
