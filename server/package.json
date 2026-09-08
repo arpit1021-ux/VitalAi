@@ -58,7 +58,7 @@
     "typescript-eslint": "^8.19.0"
   },
   "engines": {
-    "node": ">=20.11.0"
+    "node": ">=20.19.0"
   },
   "optionalDependencies": {
     "@sentry/node": "^8.47.0"

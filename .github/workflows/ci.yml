@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  NODE_VERSION: '20.11'
+  NODE_VERSION: '22'
 
 jobs:
   server:
@@ -62,7 +62,9 @@ jobs:
           JWT_SECRET: 0000000000000000000000000000000000000000000000000000000000000000
           JWT_REFRESH_SECRET: 1111111111111111111111111111111111111111111111111111111111111111
           ENCRYPTION_KEY: 2222222222222222222222222222222222222222222222222222222222222222
-          MONGODB_URI: mongodb://127.0.0.1:27017/vitalai-test
+          # Must differ from TEST_MONGODB_URI: the harness refuses to drop the
+          # database the application is configured to use.
+          MONGODB_URI: mongodb://127.0.0.1:27017/vitalai
           APP_URL: http://localhost:5173
           API_URL: http://localhost:5000
           CORS_ORIGINS: http://localhost:5173
