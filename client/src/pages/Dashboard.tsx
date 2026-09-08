@@ -90,7 +90,10 @@ export default function Dashboard() {
 
   const isGuest = !isAuthenticated;
 
-  const { data: dashData, isLoading: dashLoading } = useQuery({
+  // Only the loading state is read: the cards below fetch their own data, and
+  // this request backs the shell skeleton while the page settles. Named for
+  // what it is rather than destructuring data that is never used.
+  const { isLoading: dashLoading } = useQuery({
     queryKey: ['dashboard', activeProfile?._id],
     queryFn: () => dashboardApi.getData(activeProfile!._id).then((r) => r.data),
     enabled: !!activeProfile,

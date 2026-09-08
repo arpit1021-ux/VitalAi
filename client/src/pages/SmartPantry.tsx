@@ -1,10 +1,10 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useLocation } from 'react-router-dom';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { Plus, Trash2, ChefHat, Loader2, AlertTriangle, Package, Users, Check, Bookmark } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useProfileStore } from '@/stores/profileStore';
-import { pantry, profiles as profilesApi, savedRecipes } from '@/lib/api';
+import { pantry, savedRecipes } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -46,7 +46,7 @@ function parseIngredientName(ingredient: string): string {
     return words.slice(0, 3).join(' ');
   }
 
-  const fallback = ingredient.replace(/\(.*?\)/g, '').replace(/^\d[\d\s\/]*\w*\s*/i, '').trim();
+  const fallback = ingredient.replace(/\(.*?\)/g, '').replace(/^\d[\d\s/]*\w*\s*/i, '').trim();
   return fallback.length > 2 ? fallback.slice(0, 30) : ingredient.slice(0, 30);
 }
 
@@ -75,11 +75,6 @@ export default function SmartPantry() {
     enabled: !!activeProfile,
   });
 
-  const { data: allProfiles } = useQuery({
-    queryKey: ['profiles'],
-    queryFn: () => profilesApi.getAll().then((r) => r.data?.profiles || []),
-    enabled: !!activeProfile,
-  });
 
   const { mutate: addItem, isPending: adding } = useMutation({
     mutationFn: () => pantry.create({

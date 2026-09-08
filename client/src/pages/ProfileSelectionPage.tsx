@@ -5,7 +5,7 @@ import { Plus, Settings, LogOut } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { useProfileStore } from '@/stores/profileStore';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
+
 
 const avatarColors: Record<string, string> = {
   '🍎': '#EF4444', '💪': '#10B981', '🧘': '#6366F1', '🏃‍♀️': '#F59E0B',
@@ -17,7 +17,7 @@ const avatarColors: Record<string, string> = {
 
 export default function ProfileSelectionPage() {
   const navigate = useNavigate();
-  const { user, logout } = useAuthStore();
+  const { logout } = useAuthStore();
   const { profiles, activeProfile, setActiveProfile } = useProfileStore();
 
   useEffect(() => {

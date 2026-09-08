@@ -1,17 +1,122 @@
-import axios from 'axios';
+import axios, { AxiosError, type AxiosRequestConfig, type InternalAxiosRequestConfig } from 'axios';
+
+/**
+ * VITE_API_URL must include the /api suffix. It is the only VitalAI
+ * environment value the browser ever sees: model and database credentials are
+ * read server-side and never reach this bundle.
+ */
+const baseURL = import.meta.env.VITE_API_URL ?? 'http://localhost:5000/api';
 
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || 'http://localhost:5000/api',
+  baseURL,
   withCredentials: true,
+  // Without a timeout a stalled request hangs the calling screen forever.
+  // AI routes override this with their own, longer budget.
+  timeout: 30_000,
 });
+
+/**
+ * A retry key for one logical action.
+ *
+ * Generated once per attempt and reused if the request is retried, so a scan
+ * interrupted by a flaky connection is not analysed and billed twice. The
+ * server returns the original response for a repeat.
+ */
+export function newIdempotencyKey(): string {
+  return crypto.randomUUID();
+}
+
+function idempotent(key?: string): Record<string, string> {
+  return key ? { 'Idempotency-Key': key } : {};
+}
+
+/** Paths where a 401 is an answer rather than an expired session. */
+const NO_REFRESH_PATHS = ['/auth/login', '/auth/register', '/auth/refresh', '/auth/me'];
+
+type Retryable = InternalAxiosRequestConfig & { _retried?: boolean };
+
+let refreshInFlight: Promise<void> | null = null;
+let queue: { resolve: () => void; reject: (reason: unknown) => void }[] = [];
+
+function flushQueue(error: unknown): void {
+  const waiting = queue;
+  queue = [];
+  for (const entry of waiting) {
+    if (error) entry.reject(error);
+    else entry.resolve();
+  }
+}
+
+/**
+ * Refreshes once for however many requests fail concurrently.
+ *
+ * A dashboard can have nine requests in flight when the access token expires.
+ * Without this gate each would trigger its own refresh, and because refresh
+ * tokens rotate, the second one to arrive would present an already-rotated
+ * token — which the server correctly treats as theft and responds to by
+ * signing the user out of every device.
+ */
+function refreshSession(): Promise<void> {
+  refreshInFlight ??= api
+    .post('/auth/refresh')
+    .then(() => {
+      flushQueue(null);
+    })
+    .catch((error: unknown) => {
+      flushQueue(error);
+      throw error;
+    })
+    .finally(() => {
+      refreshInFlight = null;
+    });
+
+  return refreshInFlight;
+}
+
+/** Notifies the app that the session ended, so it can route to sign-in itself. */
+export const SESSION_EXPIRED_EVENT = 'vitalai:session-expired';
+
+function announceSessionEnd(detail: { message: string; action?: string }): void {
+  window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT, { detail }));
+}
 
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
-    if (error.response?.status === 401 && !error.config?.url?.includes('/auth/me')) {
-      window.location.href = '/login';
+  async (error: AxiosError<{ error?: string; action?: string }>) => {
+    const original = error.config as Retryable | undefined;
+    const status = error.response?.status;
+    const url = original?.url ?? '';
+
+    const refreshable =
+      status === 401 &&
+      original &&
+      !original._retried &&
+      !NO_REFRESH_PATHS.some((path) => url.includes(path));
+
+    if (!refreshable) return Promise.reject(error);
+
+    original._retried = true;
+
+    try {
+      if (refreshInFlight) {
+        // A refresh is already running; wait for its outcome rather than
+        // starting a second one against a rotating token.
+        await new Promise<void>((resolve, reject) => {
+          queue.push({ resolve, reject });
+        });
+      } else {
+        await refreshSession();
+      }
+
+      // Replay the original request with the new cookie.
+      return await api.request(original as AxiosRequestConfig);
+    } catch {
+      announceSessionEnd({
+        message: error.response?.data?.error ?? 'Your session has ended.',
+        action: error.response?.data?.action ?? 'Sign in again to continue.',
+      });
+      return Promise.reject(error);
     }
-    return Promise.reject(error);
   },
 );
 
@@ -21,8 +126,38 @@ export const auth = {
   register: (email: string, password: string) =>
     api.post('/auth/register', { email, password }),
   logout: () => api.post('/auth/logout'),
+  logoutEverywhere: () => api.post('/auth/logout-all'),
+  refresh: () => api.post('/auth/refresh'),
+  forgotPassword: (email: string) => api.post('/auth/password/forgot', { email }),
+  resetPassword: (token: string, password: string) =>
+    api.post('/auth/password/reset', { token, password }),
   getMe: () => api.get('/auth/me'),
   googleLogin: () => `${api.defaults.baseURL}/auth/google`,
+};
+
+export const account = {
+  getConsent: () => api.get('/account/consent'),
+  acceptConsent: (version: string) =>
+    api.post('/account/consent', { version, acceptHealthDataProcessing: true }),
+  /**
+   * The export is a file download on a cross-origin API, so it cannot be a
+   * plain link: the request needs the session cookie, which means fetching it
+   * as a blob and handing the browser an object URL.
+   */
+  downloadExport: async (): Promise<{ filename: string; blob: Blob }> => {
+    const response = await api.get('/account/export', { responseType: 'blob', timeout: 120_000 });
+    const disposition = response.headers['content-disposition'] as string | undefined;
+    const match = disposition?.match(/filename="([^"]+)"/);
+    return {
+      filename: match?.[1] ?? 'vitalai-export.json',
+      blob: response.data as Blob,
+    };
+  },
+  deleteAccount: (confirmEmail: string) =>
+    api.delete('/account', {
+      data: { confirmEmail, understandPermanent: true },
+      timeout: 120_000,
+    }),
 };
 
 export const profiles = {
@@ -33,19 +168,27 @@ export const profiles = {
 };
 
 export const scans = {
-  scanFood: (extractedText: string, profileId: string, imageFile?: File) => {
+  scanFood: (extractedText: string, profileId: string, imageFile?: File, retryKey?: string) => {
     const formData = new FormData();
     formData.append('extractedText', extractedText);
     formData.append('profileId', profileId);
     if (imageFile) formData.append('image', imageFile);
     return api.post('/scans/food', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
+      headers: { 'Content-Type': 'multipart/form-data', ...idempotent(retryKey) },
+      // Vision analysis takes far longer than a normal request.
+      timeout: 90_000,
     });
   },
-  scanMedicine: (extractedText: string, profileId: string) =>
-    api.post('/scans/medicine', { extractedText, profileId }),
-  scanSupplement: (extractedText: string, profileId: string) =>
-    api.post('/scans/supplement', { extractedText, profileId }),
+  scanMedicine: (extractedText: string, profileId: string, retryKey?: string) =>
+    api.post('/scans/medicine', { extractedText, profileId }, {
+      headers: idempotent(retryKey),
+      timeout: 60_000,
+    }),
+  scanSupplement: (extractedText: string, profileId: string, retryKey?: string) =>
+    api.post('/scans/supplement', { extractedText, profileId }, {
+      headers: idempotent(retryKey),
+      timeout: 60_000,
+    }),
   getHistory: (profileId: string) =>
     api.get(`/scans/history/${profileId}`),
 };
@@ -56,8 +199,12 @@ export const chat = {
   getSessions: (profileId: string) =>
     api.get(`/chat/sessions/${profileId}`),
   getSession: (id: string) => api.get(`/chat/session/${id}`),
-  sendMessage: (sessionId: string, content: string, language?: string) =>
-    api.post('/chat/message', { sessionId, content, language }),
+  sendMessage: (sessionId: string, content: string, language?: string, retryKey?: string) =>
+    api.post(
+      '/chat/message',
+      { sessionId, content, language },
+      { headers: idempotent(retryKey), timeout: 60_000 },
+    ),
   deleteSession: (id: string) => api.delete(`/chat/session/${id}`),
 };
 

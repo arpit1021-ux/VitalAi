@@ -283,7 +283,10 @@ export default function SupplementChecker() {
             </Card>
           )}
 
-          <CitationsBar sources={result.data?.verdict?.sources_used || []} />
+          <CitationsBar
+            sources={result.data?.verdict?.sources_used || []}
+            ragSources={result.data?.ragSources}
+          />
           <DisclaimerBanner />
 
           <Button variant="outline" onClick={resetAll} className="w-full">

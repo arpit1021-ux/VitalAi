@@ -11,6 +11,7 @@ import {
   LogOut,
   Lock,
   Settings,
+  ShieldCheck,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { useProfileStore } from '@/stores/profileStore';
@@ -35,7 +36,7 @@ const dropdownVariants = {
 
 export function Navbar() {
   const navigate = useNavigate();
-  const { user, isAuthenticated, logout } = useAuthStore();
+  const { isAuthenticated, logout } = useAuthStore();
   const { profiles, activeProfile, setActiveProfile } = useProfileStore();
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const profileMenuRef = useRef<HTMLDivElement>(null);
@@ -157,6 +158,18 @@ export function Navbar() {
                     <Settings className="h-4 w-4" aria-hidden="true" />
                     Manage Profiles
                   </button>
+
+                  <button
+                    onClick={() => {
+                      setShowProfileMenu(false);
+                      navigate('/settings');
+                    }}
+                    className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-text-muted hover:bg-surface hover:text-text-primary text-sm transition-colors"
+                    role="menuitem"
+                  >
+                    <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+                    Account and data
+                  </button>
                 </motion.div>
               )}
             </AnimatePresence>
@@ -187,7 +200,6 @@ export function Navbar() {
 
 export function Sidebar() {
   const location = useLocation();
-  const navigate = useNavigate();
   const { isAuthenticated } = useAuthStore();
   const [showSignInModal, setShowSignInModal] = useState(false);
   const [lockedFeature, setLockedFeature] = useState('');

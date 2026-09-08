@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, Send, Trash2, MessageSquare, Bot, User, Loader2, Globe } from 'lucide-react';
+import { Plus, Send, MessageSquare, Bot, User, Loader2, Globe } from 'lucide-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import ReactMarkdown from 'react-markdown';
 import { useProfileStore } from '@/stores/profileStore';

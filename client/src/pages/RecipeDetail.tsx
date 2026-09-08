@@ -1,8 +1,8 @@
 import { useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { ArrowLeft, Loader2, AlertTriangle, RefreshCw } from 'lucide-react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { ArrowLeft, AlertTriangle, RefreshCw } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
 import { useProfileStore } from '@/stores/profileStore';
 import { dashboardExtended } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -71,7 +71,6 @@ function LoadingSkeleton() {
 export default function RecipeDetail() {
   const navigate = useNavigate();
   const location = useLocation();
-  const queryClient = useQueryClient();
   const { activeProfile } = useProfileStore();
 
   const state = location.state as RecipeState | null;

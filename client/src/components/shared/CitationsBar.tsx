@@ -8,16 +8,27 @@ interface RagSource {
 }
 
 interface CitationsBarProps {
-  sources: string[];
+  /** Flat source names, used when the caller has no topic detail. */
+  sources?: string[];
+  /** Preferred: source plus the knowledge-base topic it came from. */
   ragSources?: RagSource[] | null;
 }
 
 export function CitationsBar({ sources, ragSources }: CitationsBarProps) {
   const [expanded, setExpanded] = useState(false);
 
-  if (!ragSources || ragSources.length === 0) return null;
+  // Callers supply either shape: the scan routes return `ragSources` with
+  // topics, while some screens only have the flat `sources` list. Rendering
+  // only when `ragSources` existed meant medicine and supplement scans showed
+  // no citations at all, even when the answer was grounded.
+  const citations: RagSource[] =
+    ragSources && ragSources.length > 0
+      ? ragSources
+      : [...new Set(sources ?? [])].map((source) => ({ source }));
 
-  const uniqueTopics = [...new Set(ragSources.map((r) => r.topic).filter(Boolean))];
+  if (citations.length === 0) return null;
+
+  const uniqueTopics = [...new Set(citations.map((r) => r.topic).filter(Boolean))];
 
   return (
     <div className="mt-3">
@@ -27,7 +38,7 @@ export function CitationsBar({ sources, ragSources }: CitationsBarProps) {
       >
         <span className="text-sm">📚</span>
         <span className="font-medium">Grounded in:</span>
-        {ragSources.map((r, i) => (
+        {citations.map((r, i) => (
           <span key={i}>
             <Badge variant="outline" className="text-[10px] px-1.5 py-0">
               {r.source}
@@ -41,7 +52,7 @@ export function CitationsBar({ sources, ragSources }: CitationsBarProps) {
       </button>
       {expanded && (
         <div className="mt-2 pl-4 border-l-2 border-border space-y-1.5">
-          {ragSources.map((r, i) => (
+          {citations.map((r, i) => (
             <div key={i} className="text-[11px] text-text-muted">
               <span className="font-medium text-text-primary">{r.source}</span>
               {r.topic && (

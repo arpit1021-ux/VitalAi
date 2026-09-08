@@ -21,8 +21,10 @@ import ScanHistory from '@/pages/ScanHistory';
 import HealthTimeline from '@/pages/HealthTimeline';
 import RecipesPage from '@/pages/RecipesPage';
 import CommunityPage from '@/pages/CommunityPage';
+import AccountSettings from '@/pages/AccountSettings';
+import PrivacyPolicy from '@/pages/PrivacyPolicy';
 
-const PUBLIC_ROUTES = ['/login', '/register', '/profile-setup', '/select-profile'];
+const PUBLIC_ROUTES = ['/login', '/register', '/profile-setup', '/select-profile', '/privacy'];
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuthStore();
@@ -93,6 +95,12 @@ function AppRoutes() {
     <ProfileGuard>
       <AnimatePresence mode="wait">
         <Routes location={location} key={location.pathname}>
+          {/* Readable signed out, so someone can decide before signing up. */}
+          <Route path="/privacy" element={<PrivacyPolicy />} />
+          <Route
+            path="/settings"
+            element={<ProtectedRoute><AccountSettings /></ProtectedRoute>}
+          />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
           <Route path="/select-profile" element={<ProfileSelectionPage />} />
