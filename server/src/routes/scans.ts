@@ -10,7 +10,7 @@ import {
   medicineVerdictSchema,
   supplementVerdictSchema,
 } from '../schemas/aiOutputs.js';
-import { AppError } from '../utils/AppError.js';
+import { AppError, forbidden, notFound } from '../utils/AppError.js';
 import { logger } from '../utils/logger.js';
 import Profile from '../models/Profile.js';
 import ScanHistory from '../models/ScanHistory.js';
@@ -81,8 +81,7 @@ router.post('/food', upload.single('image'), validate({ body: scanBodySchema }),
 
     const profile = await Profile.findOne({ _id: profileId, userId: req.jwtUser!.id });
     if (!profile) {
-      res.status(404).json({ error: 'Profile not found' });
-      return;
+      throw notFound('That profile');
     }
 
     const profileContext = `
@@ -270,8 +269,7 @@ router.post('/medicine', upload.single('image'), validate({ body: scanBodySchema
 
     const profile = await Profile.findOne({ _id: profileId, userId: req.jwtUser!.id });
     if (!profile) {
-      res.status(404).json({ error: 'Profile not found' });
-      return;
+      throw notFound('That profile');
     }
 
     const profileContext = `
@@ -349,8 +347,7 @@ router.post('/supplement', upload.single('image'), validate({ body: scanBodySche
 
     const profile = await Profile.findOne({ _id: profileId, userId: req.jwtUser!.id });
     if (!profile) {
-      res.status(404).json({ error: 'Profile not found' });
-      return;
+      throw notFound('That profile');
     }
 
     const profileContext = `
@@ -437,8 +434,7 @@ router.get(
       userId: req.jwtUser!.id,
     });
     if (!profile) {
-      res.status(404).json({ error: 'Profile not found' });
-      return;
+      throw notFound('That profile');
     }
 
     const filter: Record<string, any> = { profileId: req.params.profileId };
@@ -477,8 +473,7 @@ router.delete('/history/all/:profileId', validate({ params: z.object({ profileId
       userId: req.jwtUser!.id,
     });
     if (!profile) {
-      res.status(404).json({ error: 'Profile not found' });
-      return;
+      throw notFound('That profile');
     }
 
     const result = await ScanHistory.deleteMany({ profileId: req.params.profileId });
@@ -493,8 +488,7 @@ router.delete('/history/:id', validate({ params: z.object({ id: objectId }) }), 
   try {
     const scan = await ScanHistory.findById(req.params.id);
     if (!scan) {
-      res.status(404).json({ error: 'Scan not found' });
-      return;
+      throw notFound('That scan');
     }
 
     const profile = await Profile.findOne({
@@ -502,8 +496,7 @@ router.delete('/history/:id', validate({ params: z.object({ id: objectId }) }), 
       userId: req.jwtUser!.id,
     });
     if (!profile) {
-      res.status(403).json({ error: 'Not authorized to delete this scan' });
-      return;
+      throw forbidden('That scan belongs to another profile.');
     }
 
     await ScanHistory.findByIdAndDelete(req.params.id);

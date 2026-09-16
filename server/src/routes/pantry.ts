@@ -8,10 +8,25 @@ import PantryItem from '../models/PantryItem.js';
 import Profile from '../models/Profile.js';
 import { logger } from '../utils/logger.js';
 import { objectId, validate } from '../middleware/validate.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
+import { forbidden, notFound } from '../utils/AppError.js';
 
 const router = Router();
 
 router.use(authenticate);
+
+/**
+ * A date that may legitimately be absent.
+ *
+ * `<input type="date">` submits an empty string when it is cleared, and
+ * `z.coerce.date()` turns that into an Invalid Date rather than into nothing —
+ * so a field the form calls optional was rejected with "Invalid date" and the
+ * item could not be saved without one.
+ */
+const optionalDate = z
+  .union([z.literal(''), z.coerce.date()])
+  .optional()
+  .transform((value) => (value === '' ? undefined : value));
 
 const createItemSchema = z
   .object({
@@ -20,7 +35,7 @@ const createItemSchema = z
     quantity: z.number().positive().max(100_000).optional(),
     unit: z.string().trim().max(24).optional(),
     category: z.enum(['grains', 'dairy', 'produce', 'protein', 'spices', 'other']).optional(),
-    expiryDate: z.coerce.date().optional(),
+    expiryDate: optionalDate,
   })
   .strict();
 
@@ -33,7 +48,7 @@ const updateItemSchema = z
     quantity: z.number().positive().max(100_000).optional(),
     unit: z.string().trim().max(24).optional(),
     category: z.enum(['grains', 'dairy', 'produce', 'protein', 'spices', 'other']).optional(),
-    expiryDate: z.coerce.date().optional(),
+    expiryDate: optionalDate,
   })
   .strict()
   .refine((value) => Object.keys(value).length > 0, 'Nothing to update.');
@@ -46,99 +61,78 @@ const recipeRequestSchema = z
   })
   .strict();
 
-router.post('/', async (req: Request, res: Response) => {
-  try {
-    const data = createItemSchema.parse(req.body);
+// Validated by the middleware rather than in the handler: a ZodError raised
+// here was caught locally and returned as a bare message, losing the field it
+// belonged to — so "Invalid date" appeared as a form-level block instead of
+// under the input that caused it. The local catch also swallowed AppError, so
+// an ownership failure came back as a 500.
+router.post('/', validate({ body: createItemSchema }), asyncHandler(async (req: Request, res: Response) => {
+  const data = req.body as z.infer<typeof createItemSchema>;
 
-    const profile = await Profile.findOne({ _id: data.profileId, userId: req.jwtUser!.id });
-    if (!profile) {
-      res.status(404).json({ error: 'Profile not found' });
-      return;
-    }
-
-    const item = await PantryItem.create(data);
-
-    res.status(201).json({ item });
-  } catch (error) {
-    if (error instanceof z.ZodError) {
-      res.status(400).json({ error: error.errors[0].message });
-      return;
-    }
-    res.status(500).json({ error: 'Failed to create pantry item' });
+  const profile = await Profile.findOne({ _id: data.profileId, userId: req.jwtUser!.id });
+  if (!profile) {
+    throw notFound('That profile');
   }
-});
 
-router.get('/:profileId', validate({ params: z.object({ profileId: objectId }) }), async (req: Request, res: Response) => {
-  try {
-    const profile = await Profile.findOne({
-      _id: req.params.profileId,
-      userId: req.jwtUser!.id,
-    });
-    if (!profile) {
-      res.status(404).json({ error: 'Profile not found' });
-      return;
-    }
+  const item = await PantryItem.create(data);
 
-    const items = await PantryItem.find({ profileId: req.params.profileId });
-    res.json({ items });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch pantry items' });
+  res.status(201).json({ item });
+}));
+
+router.get('/:profileId', validate({ params: z.object({ profileId: objectId }) }), asyncHandler(async (req: Request, res: Response) => {
+  const profile = await Profile.findOne({
+    _id: req.params.profileId,
+    userId: req.jwtUser!.id,
+  });
+  if (!profile) {
+    throw notFound('That profile');
   }
-});
+
+  const items = await PantryItem.find({ profileId: req.params.profileId });
+  res.json({ items });
+}));
 
 router.put(
   '/:id',
   validate({ params: z.object({ id: objectId }), body: updateItemSchema }),
-  async (req: Request, res: Response) => {
-  try {
-    const item = await PantryItem.findById(req.params.id);
-    if (!item) {
-      res.status(404).json({ error: 'Item not found' });
-      return;
-    }
-
-    const profile = await Profile.findOne({
-      _id: item.profileId,
-      userId: req.jwtUser!.id,
-    });
-    if (!profile) {
-      res.status(403).json({ error: 'Not authorized to update this item' });
-      return;
-    }
-
-    const updatedItem = await PantryItem.findByIdAndUpdate(req.params.id, { $set: req.body }, {
-      new: true,
-      runValidators: true,
-    });
-    res.json({ item: updatedItem });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to update item' });
+  asyncHandler(async (req: Request, res: Response) => {
+  const item = await PantryItem.findById(req.params.id);
+  if (!item) {
+    throw notFound('That pantry item');
   }
-});
 
-router.delete('/:id', validate({ params: z.object({ id: objectId }) }), async (req: Request, res: Response) => {
-  try {
-    const item = await PantryItem.findById(req.params.id);
-    if (!item) {
-      res.status(404).json({ error: 'Item not found' });
-      return;
-    }
-
-    const profile = await Profile.findOne({
-      _id: item.profileId,
-      userId: req.jwtUser!.id,
-    });
-    if (!profile) {
-      res.status(403).json({ error: 'Not authorized to delete this item' });
-      return;
-    }
-
-    await PantryItem.findByIdAndDelete(req.params.id);
-    res.json({ message: 'Item deleted' });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to delete item' });
+  const profile = await Profile.findOne({
+    _id: item.profileId,
+    userId: req.jwtUser!.id,
+  });
+  if (!profile) {
+    throw forbidden('That pantry item belongs to another profile.');
   }
-});
+
+  const updatedItem = await PantryItem.findByIdAndUpdate(req.params.id, { $set: req.body }, {
+    new: true,
+    runValidators: true,
+  });
+  res.json({ item: updatedItem });
+}));
+
+router.delete('/:id', validate({ params: z.object({ id: objectId }) }), asyncHandler(async (req: Request, res: Response) => {
+  const item = await PantryItem.findById(req.params.id);
+  if (!item) {
+    throw notFound('That pantry item');
+  }
+
+  const profile = await Profile.findOne({
+    _id: item.profileId,
+    userId: req.jwtUser!.id,
+  });
+  if (!profile) {
+    throw forbidden('That pantry item belongs to another profile.');
+  }
+
+  await PantryItem.findByIdAndDelete(req.params.id);
+  res.json({ message: 'Item deleted' });
+}));
 
 router.post('/recipes', validate({ body: recipeRequestSchema }), async (req: Request, res: Response) => {
   try {
@@ -146,8 +140,7 @@ router.post('/recipes', validate({ body: recipeRequestSchema }), async (req: Req
 
     const profile = await Profile.findOne({ _id: profileId, userId: req.jwtUser!.id });
     if (!profile) {
-      res.status(404).json({ error: 'Profile not found' });
-      return;
+      throw notFound('That profile');
     }
 
     const query: any = { profileId };

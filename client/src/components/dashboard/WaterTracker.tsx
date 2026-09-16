@@ -1,10 +1,12 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useId, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Droplets, Minus, Plus, Settings } from 'lucide-react';
-import { Card, CardContent } from '@/components/ui/card';
+import { Minus, Plus, SlidersHorizontal } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Field, fieldAria } from '@/components/ui/field';
 import { Skeleton } from '@/components/ui/skeleton';
+import { transition, durations } from '@/lib/motion';
+import { useClickOutside } from '@/hooks/useClickOutside';
 
 interface WaterTrackerProps {
   count: number;
@@ -16,27 +18,8 @@ interface WaterTrackerProps {
   goalReached?: boolean;
 }
 
-function CelebrationParticle({ index }: { index: number }) {
-  const angle = (index / 12) * Math.PI * 2;
-  const distance = 60 + Math.random() * 30;
-  const colors = ['#3B82F6', '#10B981', '#6366F1', '#F59E0B', '#EF4444'];
-  const color = colors[index % colors.length];
-
-  return (
-    <motion.div
-      initial={{ scale: 0, opacity: 1, x: 0, y: 0 }}
-      animate={{
-        scale: [0, 1.5, 0],
-        opacity: [1, 1, 0],
-        x: Math.cos(angle) * distance,
-        y: Math.sin(angle) * distance,
-      }}
-      transition={{ duration: 1.2, ease: 'easeOut' }}
-      className="absolute left-1/2 top-1/2 w-2 h-2 rounded-full"
-      style={{ backgroundColor: color }}
-    />
-  );
-}
+/** Beyond this many marks the segments are thinner than the gaps between them. */
+const MAX_SEGMENTS = 16;
 
 export default function WaterTracker({
   count,
@@ -47,204 +30,187 @@ export default function WaterTracker({
   loading,
   goalReached,
 }: WaterTrackerProps) {
+  const goalFieldId = useId();
+  const goalRef = useRef<HTMLDivElement>(null);
   const [showGoalInput, setShowGoalInput] = useState(false);
   const [goalInput, setGoalInput] = useState(String(goal));
+  const [goalError, setGoalError] = useState('');
 
-  const percentage = goal > 0 ? Math.min((count / goal) * 100, 100) : 0;
-  const isComplete = percentage >= 100;
-  const ringColor = isComplete ? '#10B981' : '#3B82F6';
+  const safeGoal = goal > 0 ? goal : 8;
+  const remaining = Math.max(safeGoal - count, 0);
+  const isComplete = count >= safeGoal;
 
-  const circumference = 2 * Math.PI * 54;
-  const strokeDashoffset = circumference - (percentage / 100) * circumference;
+  const closeGoal = useCallback(() => setShowGoalInput(false), []);
+  useClickOutside(goalRef, closeGoal);
 
   const handleSetGoal = useCallback(() => {
     const num = parseInt(goalInput, 10);
-    if (!isNaN(num) && num > 0 && num <= 30) {
-      onSetGoal(num);
-      setShowGoalInput(false);
+    if (isNaN(num) || num < 1 || num > 30) {
+      setGoalError('Pick a number between 1 and 30.');
+      return;
     }
+    setGoalError('');
+    onSetGoal(num);
+    setShowGoalInput(false);
   }, [goalInput, onSetGoal]);
-
-  const glassCount = Math.min(goal, 8);
 
   if (loading) {
     return (
-      <Card>
-        <CardContent className="p-6">
-          <Skeleton className="h-4 w-32 mb-4" />
-          <div className="flex justify-center mb-4">
-            <Skeleton className="h-32 w-32 rounded-full" />
-          </div>
-          <div className="flex gap-2 justify-center">
-            {Array.from({ length: glassCount }).map((_, i) => (
-              <Skeleton key={i} className="h-7 w-7 rounded-lg" />
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+      <section className="rounded-xl bg-surface shadow-card p-6">
+        <Skeleton className="h-5 w-24 rounded" />
+        <Skeleton className="h-11 w-32 rounded mt-4" />
+        <Skeleton className="h-3 w-full rounded mt-5" />
+        <Skeleton className="h-12 w-full rounded mt-6" />
+      </section>
     );
   }
 
+  const segmented = safeGoal <= MAX_SEGMENTS;
+
   return (
-    <Card>
-      <CardContent className="p-6">
-        <div className="flex items-center gap-2 mb-4">
-          <Droplets className="h-4 w-4 text-[#3B82F6]" />
-          <p className="text-sm font-medium text-text-primary">Water Intake</p>
-          <span className="text-sm text-text-muted ml-auto">
-            {count}/{goal} glasses
-          </span>
-        </div>
+    <section
+      className={`relative rounded-xl p-6 shadow-card transition-colors duration-enter ease-entrance ${
+        isComplete ? 'bg-primary-soft border-2 border-primary/30' : 'bg-surface'
+      }`}
+      aria-labelledby="water-heading"
+    >
+      <div className="flex items-baseline gap-3">
+        <h3 id="water-heading" className="font-display text-title text-ink">
+          Water
+        </h3>
+        <div className="ml-auto relative" ref={goalRef}>
+          <button
+            type="button"
+            onClick={() => {
+              setGoalInput(String(safeGoal));
+              setGoalError('');
+              setShowGoalInput((open) => !open);
+            }}
+            className="inline-flex items-center gap-1.5 min-h-[44px] -my-2 px-3 rounded-full border-2 border-ink/15 bg-surface text-label text-ink-muted hover:border-ink/30 hover:text-ink transition-colors duration-micro ease-entrance focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+            aria-expanded={showGoalInput}
+            aria-label="Change your daily water goal"
+          >
+            <SlidersHorizontal className="h-4 w-4" aria-hidden="true" />
+            Goal
+          </button>
 
-        <div className="relative flex justify-center mb-4">
-          <div className="relative">
-            <svg width="130" height="130" viewBox="0 0 120 120" className="transform -rotate-90">
-              <circle
-                cx="60"
-                cy="60"
-                r="54"
-                fill="none"
-                stroke="#1F2937"
-                strokeWidth="8"
-              />
-              <motion.circle
-                cx="60"
-                cy="60"
-                r="54"
-                fill="none"
-                stroke={ringColor}
-                strokeWidth="8"
-                strokeLinecap="round"
-                strokeDasharray={circumference}
-                initial={{ strokeDashoffset: circumference }}
-                animate={{ strokeDashoffset }}
-                transition={{ duration: 1, ease: 'easeOut' }}
-              />
-            </svg>
-
-            <div className="absolute inset-0 flex flex-col items-center justify-center">
-              <motion.span
-                key={count}
-                initial={{ scale: 1.3 }}
-                animate={{ scale: 1 }}
-                className="text-2xl font-bold text-text-primary"
+          <AnimatePresence>
+            {showGoalInput && (
+              <motion.div
+                initial={{ opacity: 0, y: -4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -4 }}
+                transition={transition(durations.micro)}
+                className="absolute right-0 top-full z-20 mt-2 w-[min(17rem,calc(100vw-4rem))] rounded-xl border border-line bg-surface p-4 shadow-overlay"
               >
-                {count}
-              </motion.span>
-              <span className="text-xs text-text-muted">glasses</span>
-            </div>
-
-            <AnimatePresence>
-              {goalReached && (
-                <div className="absolute inset-0 pointer-events-none">
-                  {Array.from({ length: 12 }).map((_, i) => (
-                    <CelebrationParticle key={i} index={i} />
-                  ))}
-                </div>
-              )}
-            </AnimatePresence>
-          </div>
-        </div>
-
-        <p className="text-center text-sm text-text-muted mb-4">
-          {Math.round(percentage)}% complete
-          {isComplete && (
-            <motion.span
-              initial={{ scale: 0 }}
-              animate={{ scale: 1 }}
-              className="ml-2 text-secondary"
-            >
-              ✓ Goal reached!
-            </motion.span>
-          )}
-        </p>
-
-        <div className="flex gap-2 justify-center mb-4">
-          {Array.from({ length: glassCount }).map((_, i) => (
-            <motion.div
-              key={i}
-              initial={false}
-              animate={{ scale: i < count ? 1.1 : 1 }}
-              transition={{ type: 'spring', stiffness: 300, damping: 20 }}
-            >
-              <Droplets
-                className={`h-7 w-7 transition-colors ${
-                  i < count ? 'text-[#3B82F6]' : 'text-text-muted/30'
-                }`}
-                fill={i < count ? '#3B82F6' : 'none'}
-              />
-            </motion.div>
-          ))}
-        </div>
-
-        <div className="flex items-center justify-center gap-3">
-          <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
-            <Button
-              variant="outline"
-              size="icon"
-              onClick={onRemove}
-              disabled={count <= 0}
-              aria-label="Remove water glass"
-            >
-              <Minus className="h-4 w-4" />
-            </Button>
-          </motion.div>
-
-          <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
-            <Button
-              size="icon"
-              onClick={onAdd}
-              aria-label="Add water glass"
-            >
-              <Plus className="h-4 w-4" />
-            </Button>
-          </motion.div>
-
-          <div className="relative">
-            <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => {
-                  setGoalInput(String(goal));
-                  setShowGoalInput(!showGoalInput);
-                }}
-                aria-label="Set water goal"
-              >
-                <Settings className="h-4 w-4" />
-              </Button>
-            </motion.div>
-
-            <AnimatePresence>
-              {showGoalInput && (
-                <motion.div
-                  initial={{ opacity: 0, y: -8, scale: 0.96 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: -8, scale: 0.96 }}
-                  className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 bg-surface border border-border rounded-xl p-3 shadow-xl z-10 w-40"
+                <Field
+                  htmlFor={goalFieldId}
+                  label="Glasses a day"
+                  hint="Anywhere from 1 to 30."
+                  error={goalError || undefined}
                 >
-                  <p className="text-xs text-text-muted mb-2">Set daily goal</p>
                   <div className="flex gap-2">
                     <Input
                       type="number"
+                      inputMode="numeric"
                       min={1}
                       max={30}
                       value={goalInput}
+                      invalid={!!goalError}
                       onChange={(e) => setGoalInput(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && handleSetGoal()}
-                      className="h-8 text-center"
-                      aria-label="Water goal number"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') handleSetGoal();
+                        if (e.key === 'Escape') setShowGoalInput(false);
+                      }}
+                      className="w-20 text-center tabular"
+                      {...fieldAria(goalFieldId, {
+                        hint: 'Anywhere from 1 to 30.',
+                        error: goalError || undefined,
+                      })}
                     />
-                    <Button size="sm" onClick={handleSetGoal}>
-                      Set
+                    <Button size="md" onClick={handleSetGoal} className="flex-1">
+                      Save
                     </Button>
                   </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
+                </Field>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
-      </CardContent>
-    </Card>
+      </div>
+
+      <p className="mt-4 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span className={`font-mono text-stat tabular ${isComplete ? 'text-primary-ink' : 'text-ink'}`}>{count}</span>
+        <span className="text-body-lg text-ink-muted">
+          of <span className="tabular">{safeGoal}</span> glasses
+        </span>
+      </p>
+
+      {/* One mark per glass while that stays legible; a plain meter once the
+          goal is high enough that the marks would be thinner than their gaps. */}
+      <div
+        className="mt-5 flex gap-1.5"
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={safeGoal}
+        aria-valuenow={Math.min(count, safeGoal)}
+        aria-valuetext={`${count} of ${safeGoal} glasses`}
+        aria-labelledby="water-heading"
+      >
+        {segmented ? (
+          Array.from({ length: safeGoal }).map((_, i) => (
+            <span
+              key={i}
+              className={`h-3 flex-1 rounded transition-colors duration-enter ease-entrance ${
+                i < count ? 'bg-primary' : 'bg-sunk'
+              }`}
+            />
+          ))
+        ) : (
+          <span className="h-3 flex-1 rounded bg-sunk overflow-hidden">
+            <motion.span
+              className="block h-full bg-primary rounded"
+              initial={false}
+              animate={{ width: `${Math.min((count / safeGoal) * 100, 100)}%` }}
+              transition={transition(durations.enter)}
+            />
+          </span>
+        )}
+      </div>
+
+      <p
+        className={`mt-4 text-body ${isComplete ? 'text-primary-ink font-semibold' : 'text-ink-muted'}`}
+        role="status"
+        aria-live="polite"
+      >
+        {isComplete
+          ? goalReached
+            ? "That's today's mark. Well done."
+            : "That's today's mark."
+          : count === 0
+            ? 'Nothing yet today.'
+            : remaining === 1
+              ? 'One more to go.'
+              : `${remaining} more to go.`}
+      </p>
+
+      <div className="mt-6 flex items-center gap-2">
+        <Button
+          variant="secondary"
+          size="icon"
+          onClick={onRemove}
+          disabled={count <= 0}
+          aria-label="Take a glass back off"
+          className="flex-shrink-0"
+        >
+          <Minus className="h-5 w-5" aria-hidden="true" />
+        </Button>
+        <Button size="lg" onClick={onAdd} className="flex-1 min-w-0">
+          <Plus className="h-5 w-5 flex-shrink-0" aria-hidden="true" />
+          <span className="truncate">Had a glass</span>
+        </Button>
+      </div>
+
+    </section>
   );
 }

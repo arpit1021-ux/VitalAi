@@ -4,6 +4,8 @@ import { authenticate } from '../middleware/auth.js';
 import SavedRecipe from '../models/SavedRecipe.js';
 import Profile from '../models/Profile.js';
 import { objectId, searchTerm, validate } from '../middleware/validate.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
+import { conflict, forbidden, notFound } from '../utils/AppError.js';
 
 const listQuerySchema = z.object({
   diet: z.string().trim().max(40).optional(),
@@ -35,95 +37,77 @@ const createRecipeSchema = z.object({
   source: z.enum(['dinner-ideas', 'pantry', 'manual']).optional(),
 });
 
-router.get('/:profileId', validate({ params: z.object({ profileId: objectId }), query: listQuerySchema }), async (req: Request, res: Response) => {
-  try {
-    const profile = await Profile.findOne({
-      _id: req.params.profileId,
-      userId: req.jwtUser!.id,
-    });
-    if (!profile) {
-      res.status(404).json({ error: 'Profile not found' });
-      return;
-    }
-
-    const { diet, search, sort } = req.query as unknown as z.infer<typeof listQuerySchema>;
-    const query: any = { profileId: req.params.profileId };
-
-    if (diet && diet !== 'all') {
-      query.dietaryTags = { $in: [diet] };
-    }
-    if (search) {
-      // searchTerm has already stripped regex metacharacters, so this cannot
-      // be used to inject a pathological pattern.
-      query.name = { $regex: search, $options: 'i' };
-    }
-
-    let sortOption: any = { createdAt: -1 };
-    if (sort === 'oldest') sortOption = { createdAt: 1 };
-    if (sort === 'name') sortOption = { name: 1 };
-
-    const recipes = await SavedRecipe.find(query).sort(sortOption);
-    res.json({ recipes });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch recipes' });
+router.get('/:profileId', validate({ params: z.object({ profileId: objectId }), query: listQuerySchema }), asyncHandler(async (req: Request, res: Response) => {
+  const profile = await Profile.findOne({
+    _id: req.params.profileId,
+    userId: req.jwtUser!.id,
+  });
+  if (!profile) {
+    throw notFound('That profile');
   }
-});
 
-router.post('/', async (req: Request, res: Response) => {
-  try {
-    const data = createRecipeSchema.parse(req.body);
+  const { diet, search, sort } = req.query as unknown as z.infer<typeof listQuerySchema>;
+  const query: any = { profileId: req.params.profileId };
 
-    const profile = await Profile.findOne({
-      _id: data.profileId,
-      userId: req.jwtUser!.id,
-    });
-    if (!profile) {
-      res.status(404).json({ error: 'Profile not found' });
-      return;
-    }
-
-    const existing = await SavedRecipe.findOne({
-      profileId: data.profileId,
-      name: data.name,
-    });
-    if (existing) {
-      res.status(400).json({ error: 'Recipe already saved' });
-      return;
-    }
-
-    const recipe = await SavedRecipe.create(data);
-    res.status(201).json({ recipe });
-  } catch (error) {
-    if (error instanceof z.ZodError) {
-      res.status(400).json({ error: error.errors[0].message });
-      return;
-    }
-    res.status(500).json({ error: 'Failed to save recipe' });
+  if (diet && diet !== 'all') {
+    query.dietaryTags = { $in: [diet] };
   }
-});
-
-router.delete('/:id', validate({ params: z.object({ id: objectId }) }), async (req: Request, res: Response) => {
-  try {
-    const recipe = await SavedRecipe.findById(req.params.id);
-    if (!recipe) {
-      res.status(404).json({ error: 'Recipe not found' });
-      return;
-    }
-
-    const profile = await Profile.findOne({
-      _id: recipe.profileId,
-      userId: req.jwtUser!.id,
-    });
-    if (!profile) {
-      res.status(403).json({ error: 'Not authorized' });
-      return;
-    }
-
-    await SavedRecipe.findByIdAndDelete(req.params.id);
-    res.json({ message: 'Recipe removed' });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to delete recipe' });
+  if (search) {
+    // searchTerm has already stripped regex metacharacters, so this cannot
+    // be used to inject a pathological pattern.
+    query.name = { $regex: search, $options: 'i' };
   }
-});
+
+  let sortOption: any = { createdAt: -1 };
+  if (sort === 'oldest') sortOption = { createdAt: 1 };
+  if (sort === 'name') sortOption = { name: 1 };
+
+  const recipes = await SavedRecipe.find(query).sort(sortOption);
+  res.json({ recipes });
+}));
+
+// Validated by the middleware: a ZodError caught here lost the field it
+// belonged to, and the same catch swallowed AppError — the "already saved"
+// conflict came back as a generic 500.
+router.post('/', validate({ body: createRecipeSchema }), asyncHandler(async (req: Request, res: Response) => {
+  const data = req.body as z.infer<typeof createRecipeSchema>;
+
+  const profile = await Profile.findOne({
+    _id: data.profileId,
+    userId: req.jwtUser!.id,
+  });
+  if (!profile) {
+    throw notFound('That profile');
+  }
+
+  const existing = await SavedRecipe.findOne({
+    profileId: data.profileId,
+    name: data.name,
+  });
+  if (existing) {
+    throw conflict('That recipe is already saved.', 'Open it from your saved recipes.');
+  }
+
+  const recipe = await SavedRecipe.create(data);
+  res.status(201).json({ recipe });
+}));
+
+router.delete('/:id', validate({ params: z.object({ id: objectId }) }), asyncHandler(async (req: Request, res: Response) => {
+  const recipe = await SavedRecipe.findById(req.params.id);
+  if (!recipe) {
+    throw notFound('That saved recipe');
+  }
+
+  const profile = await Profile.findOne({
+    _id: recipe.profileId,
+    userId: req.jwtUser!.id,
+  });
+  if (!profile) {
+    throw forbidden('That was created by someone else.');
+  }
+
+  await SavedRecipe.findByIdAndDelete(req.params.id);
+  res.json({ message: 'Recipe removed' });
+}));
 
 export default router;

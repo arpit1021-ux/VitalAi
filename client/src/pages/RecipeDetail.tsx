@@ -1,16 +1,17 @@
 import { useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { ArrowLeft, AlertTriangle, RefreshCw } from 'lucide-react';
+import { ArrowLeft, Clock, UtensilsCrossed } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { useProfileStore } from '@/stores/profileStore';
 import { dashboardExtended } from '@/lib/api';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Skeleton } from '@/components/ui/skeleton';
 import { CitationsBar } from '@/components/shared/CitationsBar';
 import { DisclaimerBanner } from '@/components/shared/DisclaimerBanner';
+import { EmptyState } from '@/components/shared/EmptyState';
+import { SectionBoundary } from '@/components/shared/SectionBoundary';
+import { rise, stagger, transition, durations } from '@/lib/motion';
 
 interface RecipeState {
   name: string;
@@ -36,36 +37,14 @@ interface ExpandedRecipe {
   };
 }
 
-function LoadingSkeleton() {
-  return (
-    <div className="max-w-2xl mx-auto space-y-6">
-      <Skeleton className="h-8 w-32" />
-      <Card>
-        <CardHeader>
-          <Skeleton className="h-7 w-48" />
-          <Skeleton className="h-4 w-64 mt-2" />
-          <div className="flex gap-2 mt-2">
-            <Skeleton className="h-5 w-16" />
-            <Skeleton className="h-5 w-20" />
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Skeleton className="h-4 w-24" />
-            {Array.from({ length: 6 }).map((_, i) => (
-              <Skeleton key={i} className="h-4 w-full" />
-            ))}
-          </div>
-          <div className="space-y-2">
-            <Skeleton className="h-4 w-16" />
-            {Array.from({ length: 5 }).map((_, i) => (
-              <Skeleton key={i} className="h-4 w-full" />
-            ))}
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-  );
+interface RagSource {
+  source: string;
+  topic?: string;
+}
+
+interface ExpandedRecipeResponse {
+  recipe?: ExpandedRecipe;
+  ragSources?: RagSource[] | null;
 }
 
 export default function RecipeDetail() {
@@ -81,7 +60,7 @@ export default function RecipeDetail() {
     }
   }, [state, navigate]);
 
-  const { data, isLoading, error, refetch } = useQuery({
+  const recipeQuery = useQuery<ExpandedRecipeResponse>({
     queryKey: ['recipe-expand', activeProfile?._id, state?.name],
     queryFn: () =>
       dashboardExtended
@@ -91,15 +70,12 @@ export default function RecipeDetail() {
     retry: 1,
   });
 
-  const recipe: ExpandedRecipe | undefined = data?.recipe;
-  const ragSources = data?.ragSources;
-
-  const handleCookWithPantry = () => {
+  const handleCookWithPantry = (recipe: ExpandedRecipe) => {
     navigate('/pantry', {
       state: {
         targetRecipe: {
-          name: recipe?.name || state?.name || '',
-          ingredients: recipe?.ingredients || [],
+          name: recipe.name || state?.name || '',
+          ingredients: recipe.ingredients || [],
         },
       },
     });
@@ -108,133 +84,141 @@ export default function RecipeDetail() {
   if (!state?.name) return null;
 
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
-      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => navigate(-1)}
-          className="mb-4 gap-1"
-        >
-          <ArrowLeft className="h-4 w-4" /> Back
+    <div className="mx-auto max-w-3xl space-y-8">
+      <motion.header variants={rise} initial="hidden" animate="visible" transition={transition(durations.enter)}>
+        <Button variant="ghost" size="sm" onClick={() => navigate(-1)} className="-ml-3 mb-4">
+          <ArrowLeft className="h-4 w-4" aria-hidden="true" /> Back
         </Button>
 
-        <div className="flex items-center gap-3 mb-2">
-          {state.emoji && <span className="text-4xl">{state.emoji}</span>}
-          <div className="flex-1 min-w-0">
-            <h1 className="text-2xl font-bold text-text-primary">{state.name}</h1>
+        <div className="flex items-start gap-3">
+          {/* The emoji belongs to the recipe the model wrote — it is content. */}
+          {state.emoji && <span className="text-4xl leading-none">{state.emoji}</span>}
+          <div className="min-w-0 flex-1">
+            <h1 className="font-display text-display text-ink text-balance break-words">{state.name}</h1>
             {state.description && (
-              <p className="text-text-muted mt-1">{state.description}</p>
+              <p className="mt-3 max-w-reading text-body-lg text-ink-muted break-words">{state.description}</p>
             )}
           </div>
           {state.prepTime && (
-            <Badge variant="outline" className="text-xs flex-shrink-0">⏱️ {state.prepTime}</Badge>
+            <Badge variant="neutral" className="flex-shrink-0">
+              <Clock className="h-3 w-3" aria-hidden="true" />
+              <span className="font-mono tabular-nums">{state.prepTime}</span>
+            </Badge>
           )}
         </div>
-      </motion.div>
+      </motion.header>
 
-      {isLoading ? (
-        <LoadingSkeleton />
-      ) : error ? (
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
-          <Card>
-            <CardContent className="p-6 text-center">
-              <AlertTriangle className="h-10 w-10 text-warning mx-auto mb-3" />
-              <p className="text-text-primary font-medium mb-1">Failed to load recipe details</p>
-              <p className="text-sm text-text-muted mb-4">
-                We couldn't expand this recipe. Please try again.
-              </p>
-              <Button onClick={() => refetch()} variant="outline" size="sm" className="gap-2">
-                <RefreshCw className="h-4 w-4" /> Retry
-              </Button>
-            </CardContent>
-          </Card>
-        </motion.div>
-      ) : recipe ? (
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="space-y-4"
-        >
-          <Card>
-            <CardHeader>
-              {recipe.dietary_tags?.length > 0 && (
-                <div className="flex flex-wrap gap-1">
-                  {recipe.dietary_tags.map((tag: string, j: number) => (
-                    <Badge key={j} variant="secondary" className="text-xs">{tag}</Badge>
+      <SectionBoundary
+        query={recipeQuery}
+        band="explained"
+        loadingLabel="Writing out the full recipe…"
+        isEmpty={(d) => !d.recipe}
+        empty={
+          <EmptyState
+            icon={UtensilsCrossed}
+            title="We couldn't write this one out"
+            description="The full version of this recipe didn't come through. Go back and pick another, or come back to this one later."
+            actionLabel="Back to recipes"
+            onAction={() => navigate(-1)}
+          />
+        }
+      >
+        {({ recipe, ragSources }) => recipe == null ? null : (
+          <motion.div variants={stagger()} initial="hidden" animate="visible" className="space-y-6">
+            {(recipe.dietary_tags?.length > 0 || recipe.serves) && (
+              <motion.div
+                variants={rise}
+                transition={transition(durations.enter)}
+                className="flex flex-wrap items-center gap-2"
+              >
+                {recipe.dietary_tags?.map((tag: string, j: number) => (
+                  <Badge key={j} variant="outline">{tag}</Badge>
+                ))}
+                {recipe.serves && (
+                  <span className="text-caption text-ink-muted">
+                    Serves <span className="font-mono tabular-nums">{recipe.serves}</span>
+                  </span>
+                )}
+              </motion.div>
+            )}
+
+            {recipe.ingredients?.length > 0 && (
+              <motion.section
+                variants={rise}
+                transition={transition(durations.enter)}
+                aria-labelledby="recipe-ingredients"
+                className="border-t border-line pt-6"
+              >
+                <h2 id="recipe-ingredients" className="text-heading text-ink">What you need</h2>
+                <ul className="mt-3 divide-y divide-line border-y border-line">
+                  {recipe.ingredients.map((ing: string, j: number) => (
+                    <li key={j} className="py-2.5 text-body-lg text-ink break-words">{ing}</li>
                   ))}
-                </div>
-              )}
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {recipe.serves && (
-                <p className="text-xs text-text-muted">Serves {recipe.serves}</p>
-              )}
+                </ul>
+              </motion.section>
+            )}
 
-              {recipe.ingredients?.length > 0 && (
-                <div>
-                  <p className="text-xs font-medium text-text-muted mb-2">Ingredients</p>
-                  <ul className="text-sm text-text-primary space-y-1">
-                    {recipe.ingredients.map((ing: string, j: number) => (
-                      <li key={j} className="flex items-start gap-2">
-                        <span className="text-primary mt-1">•</span>
-                        {ing}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
+            {recipe.instructions?.length > 0 && (
+              <motion.section
+                variants={rise}
+                transition={transition(durations.enter)}
+                aria-labelledby="recipe-steps"
+                className="border-t border-line pt-6"
+              >
+                <h2 id="recipe-steps" className="text-heading text-ink">How you make it</h2>
+                <ol className="mt-3 space-y-4">
+                  {recipe.instructions.map((stepText: string, j: number) => (
+                    <li key={j} className="flex items-start gap-3">
+                      <span
+                        aria-hidden="true"
+                        className="mt-0.5 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-primary-soft font-mono text-figure text-primary-ink"
+                      >
+                        {j + 1}
+                      </span>
+                      <span className="max-w-reading text-body-lg text-ink break-words">{stepText}</span>
+                    </li>
+                  ))}
+                </ol>
+              </motion.section>
+            )}
 
-              {recipe.instructions?.length > 0 && (
-                <div>
-                  <p className="text-xs font-medium text-text-muted mb-2">Steps</p>
-                  <ol className="text-sm text-text-primary space-y-2">
-                    {recipe.instructions.map((step: string, j: number) => (
-                      <li key={j} className="flex items-start gap-3">
-                        <span className="h-5 w-5 rounded-full bg-primary/20 text-primary text-xs flex items-center justify-center flex-shrink-0 mt-0.5 font-medium">
-                          {j + 1}
-                        </span>
-                        {step}
-                      </li>
-                    ))}
-                  </ol>
-                </div>
-              )}
+            {recipe.health_benefits && (
+              <motion.section
+                variants={rise}
+                transition={transition(durations.enter)}
+                aria-labelledby="recipe-benefits"
+                className="rounded-md bg-primary-soft p-5"
+              >
+                <h2 id="recipe-benefits" className="text-heading text-primary-ink">Why this is good for you</h2>
+                <p className="mt-2 max-w-reading text-body-lg text-ink break-words">{recipe.health_benefits}</p>
+              </motion.section>
+            )}
 
-              {recipe.health_benefits && (
-                <div className="p-3 rounded-lg bg-primary/5 border border-primary/20">
-                  <p className="text-xs font-medium text-primary mb-1">Why this is good for you</p>
-                  <p className="text-sm text-text-primary">{recipe.health_benefits}</p>
-                </div>
-              )}
+            {recipe.nutrition && (
+              <motion.div
+                variants={rise}
+                transition={transition(durations.enter)}
+                className="flex flex-wrap gap-x-5 gap-y-1 border-t border-line pt-4 font-mono text-figure text-ink-muted"
+              >
+                {recipe.nutrition.calories && <span>~{recipe.nutrition.calories} cal</span>}
+                {recipe.nutrition.protein && <span>{recipe.nutrition.protein}g protein</span>}
+                {recipe.nutrition.carbs && <span>{recipe.nutrition.carbs}g carbs</span>}
+                {recipe.nutrition.fat && <span>{recipe.nutrition.fat}g fat</span>}
+              </motion.div>
+            )}
 
-              {recipe.nutrition && (
-                <div className="flex gap-4 text-xs text-text-muted">
-                  {recipe.nutrition.calories && <span>~{recipe.nutrition.calories} cal</span>}
-                  {recipe.nutrition.protein && <span>{recipe.nutrition.protein}g protein</span>}
-                  {recipe.nutrition.carbs && <span>{recipe.nutrition.carbs}g carbs</span>}
-                  {recipe.nutrition.fat && <span>{recipe.nutrition.fat}g fat</span>}
-                </div>
-              )}
-            </CardContent>
-          </Card>
+            <CitationsBar sources={[]} ragSources={ragSources} />
 
-          <CitationsBar sources={[]} ragSources={ragSources} />
+            <motion.div variants={rise} transition={transition(durations.enter)}>
+              <Button onClick={() => handleCookWithPantry(recipe)} className="w-full" size="lg">
+                Cook this from what I've got
+              </Button>
+            </motion.div>
 
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2 }}
-          >
-            <Button onClick={handleCookWithPantry} className="w-full" size="lg">
-              Cook using my pantry
-            </Button>
+            <DisclaimerBanner />
           </motion.div>
-
-          <DisclaimerBanner />
-        </motion.div>
-      ) : null}
+        )}
+      </SectionBoundary>
     </div>
   );
 }

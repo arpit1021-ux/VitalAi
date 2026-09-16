@@ -8,7 +8,7 @@ import ScanHistory from '../models/ScanHistory.js';
 import { objectId, validate } from '../middleware/validate.js';
 import { z } from 'zod';
 import { asyncHandler } from '../utils/asyncHandler.js';
-import { forbidden } from '../utils/AppError.js';
+import { badRequest, forbidden } from '../utils/AppError.js';
 
 const router = Router();
 
@@ -41,37 +41,35 @@ router.get(
   }),
 );
 
-router.post('/generate', async (req: Request, res: Response) => {
-  try {
-    const profiles = await Profile.find({ userId: req.jwtUser!.id });
-    if (profiles.length === 0) {
-      res.status(400).json({ error: 'No profiles found' });
-      return;
-    }
+router.post('/generate', asyncHandler(async (req: Request, res: Response) => {
+  const profiles = await Profile.find({ userId: req.jwtUser!.id });
+  if (profiles.length === 0) {
+    throw badRequest('There are no profiles on this account yet.', 'Create a profile first, then open insights.');
+  }
 
-    const profileIds = profiles.map((p) => p._id);
-    const recentScans = await ScanHistory.find({
-      profileId: { $in: profileIds },
-    })
-      .sort({ createdAt: -1 })
-      .limit(20);
+  const profileIds = profiles.map((p) => p._id);
+  const recentScans = await ScanHistory.find({
+    profileId: { $in: profileIds },
+  })
+    .sort({ createdAt: -1 })
+    .limit(20);
 
-    const profilesData = profiles.map((p) => ({
-      name: p.name,
-      age: p.age,
-      dietType: p.dietType,
-      conditions: p.conditions,
-      medications: p.medications?.map((m) => m.name),
-      fitnessGoal: p.fitnessGoal,
-    }));
+  const profilesData = profiles.map((p) => ({
+    name: p.name,
+    age: p.age,
+    dietType: p.dietType,
+    conditions: p.conditions,
+    medications: p.medications?.map((m) => m.name),
+    fitnessGoal: p.fitnessGoal,
+  }));
 
-    const scansSummary = recentScans.map((s) => ({
-      type: s.type,
-      verdict: s.aiVerdict,
-      date: s.createdAt,
-    }));
+  const scansSummary = recentScans.map((s) => ({
+    type: s.type,
+    verdict: s.aiVerdict,
+    date: s.createdAt,
+  }));
 
-    const systemPrompt = `You are generating family health insights. Analyze the family's health data and provide personalized insights and recommendations.
+  const systemPrompt = `You are generating family health insights. Analyze the family's health data and provide personalized insights and recommendations.
 
 Respond with ONLY the JSON object, no preamble, no explanation, no markdown fencing.
 
@@ -85,34 +83,31 @@ Return a JSON response with this exact structure:
   "grocery_suggestions": ["suggested grocery items for better nutrition"]
 }`;
 
-    const userMessage = `Family Profiles:\n${JSON.stringify(profilesData, null, 2)}\n\nRecent Health Scans:\n${JSON.stringify(scansSummary, null, 2)}\n\nPlease generate comprehensive family health insights.`;
+  const userMessage = `Family Profiles:\n${JSON.stringify(profilesData, null, 2)}\n\nRecent Health Scans:\n${JSON.stringify(scansSummary, null, 2)}\n\nPlease generate comprehensive family health insights.`;
 
-    const modelResponse = await generateText({
+  const modelResponse = await generateText({
 
-      userId: req.jwtUser!.id,
+    userId: req.jwtUser!.id,
 
-      operation: 'family_insights.refresh',
+    operation: 'family_insights.refresh',
 
-        maxOutputTokens: 2048,
-      systemPrompt,
-      userMessage,
-    });
+      maxOutputTokens: 2048,
+    systemPrompt,
+    userMessage,
+  });
 
-    const parsed = parseJsonResponse<{ family_summary: string }>(
-      modelResponse,
-      { family_summary: modelResponse }
-    );
+  const parsed = parseJsonResponse<{ family_summary: string }>(
+    modelResponse,
+    { family_summary: modelResponse }
+  );
 
-    const insight = await FamilyInsight.create({
-      userId: req.jwtUser!.id,
-      insights: parsed,
-      generatedAt: new Date(),
-    });
+  const insight = await FamilyInsight.create({
+    userId: req.jwtUser!.id,
+    insights: parsed,
+    generatedAt: new Date(),
+  });
 
-    res.json({ insight });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to generate insights' });
-  }
-});
+  res.json({ insight });
+}));
 
 export default router;

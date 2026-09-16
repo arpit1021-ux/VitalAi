@@ -5,7 +5,7 @@ import User from '../models/User.js';
 import { authenticate } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { objectId, validate } from '../middleware/validate.js';
-import { forbidden, notFound } from '../utils/AppError.js';
+import { badRequest, forbidden, notFound } from '../utils/AppError.js';
 import { env } from '../config/env.js';
 
 const router = Router();
@@ -35,14 +35,10 @@ const updateProfileSchema = z
 
 const profileParams = z.object({ id: objectId });
 
-router.get('/', async (req: Request, res: Response) => {
-  try {
-    const profiles = await Profile.find({ userId: req.jwtUser!.id });
-    res.json({ profiles });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch profiles' });
-  }
-});
+router.get('/', asyncHandler(async (req: Request, res: Response) => {
+  const profiles = await Profile.find({ userId: req.jwtUser!.id });
+  res.json({ profiles });
+}));
 
 router.post(
   '/',
@@ -70,21 +66,16 @@ router.post(
   }),
 );
 
-router.get('/:id', validate({ params: profileParams }), async (req: Request, res: Response) => {
-  try {
-    const profile = await Profile.findOne({
-      _id: req.params.id,
-      userId: req.jwtUser!.id,
-    });
-    if (!profile) {
-      res.status(404).json({ error: 'Profile not found' });
-      return;
-    }
-    res.json({ profile });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch profile' });
+router.get('/:id', validate({ params: profileParams }), asyncHandler(async (req: Request, res: Response) => {
+  const profile = await Profile.findOne({
+    _id: req.params.id,
+    userId: req.jwtUser!.id,
+  });
+  if (!profile) {
+    throw notFound('That profile');
   }
-});
+  res.json({ profile });
+}));
 
 router.put(
   '/:id',
@@ -109,36 +100,30 @@ router.put(
   }),
 );
 
-router.delete('/:id', validate({ params: profileParams }), async (req: Request, res: Response) => {
-  try {
-    const profile = await Profile.findOne({
-      _id: req.params.id,
-      userId: req.jwtUser!.id,
-    });
-    if (!profile) {
-      res.status(404).json({ error: 'Profile not found' });
-      return;
-    }
-
-    const profileCount = await Profile.countDocuments({ userId: req.jwtUser!.id });
-    if (profileCount <= 1) {
-      res.status(400).json({ error: 'Cannot delete your only profile. Create another profile first.' });
-      return;
-    }
-
-    await Profile.findOneAndDelete({
-      _id: req.params.id,
-      userId: req.jwtUser!.id,
-    });
-
-    await User.findByIdAndUpdate(req.jwtUser!.id, {
-      $pull: { profiles: profile._id },
-    });
-
-    res.json({ message: 'Profile deleted' });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to delete profile' });
+router.delete('/:id', validate({ params: profileParams }), asyncHandler(async (req: Request, res: Response) => {
+  const profile = await Profile.findOne({
+    _id: req.params.id,
+    userId: req.jwtUser!.id,
+  });
+  if (!profile) {
+    throw notFound('That profile');
   }
-});
+
+  const profileCount = await Profile.countDocuments({ userId: req.jwtUser!.id });
+  if (profileCount <= 1) {
+    throw badRequest('This is the only profile on the account.', 'Create another profile first, then delete this one.');
+  }
+
+  await Profile.findOneAndDelete({
+    _id: req.params.id,
+    userId: req.jwtUser!.id,
+  });
+
+  await User.findByIdAndUpdate(req.jwtUser!.id, {
+    $pull: { profiles: profile._id },
+  });
+
+  res.json({ message: 'Profile deleted' });
+}));
 
 export default router;

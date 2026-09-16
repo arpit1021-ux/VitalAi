@@ -51,20 +51,20 @@ export default function HealthCoach({ message, category, priority, loading }: He
             <Icon className="h-5 w-5" style={{ color: config.color }} />
           </div>
           <div className="flex-1">
-            <p className="text-sm font-medium text-text-primary">AI Health Coach</p>
-            <Badge variant="secondary" className="text-xs mt-0.5">
+            <p className="text-sm font-medium text-ink">AI Health Coach</p>
+            <Badge variant="neutral" className="text-xs mt-0.5">
               {category}
             </Badge>
           </div>
           {priority === 'high' && (
-            <Badge variant="destructive" className="text-xs">Priority</Badge>
+            <Badge variant="danger" className="text-xs">Priority</Badge>
           )}
         </div>
 
         <motion.p
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
-          className="text-sm text-text-primary leading-relaxed"
+          className="text-sm text-ink leading-relaxed"
         >
           {message}
         </motion.p>

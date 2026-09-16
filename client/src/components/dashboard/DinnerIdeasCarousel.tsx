@@ -1,11 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChefHat, SkipForward, ArrowRight } from 'lucide-react';
+import { ChefHat, ArrowRight, RotateCw } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { dashboardExtended } from '@/lib/api';
-import { Card, CardContent } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { ErrorState } from '@/components/shared/ErrorState';
+import { describeError, isCancellation } from '@/lib/errors';
+import { step, transition, durations } from '@/lib/motion';
 
 interface Recipe {
   name: string;
@@ -16,59 +19,62 @@ interface Recipe {
 
 interface DinnerIdeasCarouselProps {
   profileId: string;
-  loading?: boolean;
+}
+
+/**
+ * A white card that sits on the dark hero panel. It is deliberately the
+ * brightest object on the screen — `shadow-lift` rather than `shadow-card`,
+ * because on canvas a card needs to look lifted off the panel, not printed
+ * onto it.
+ */
+function Shell({ children }: { children: React.ReactNode }) {
+  return <section className="rounded-xl bg-surface shadow-lift p-5 sm:p-6">{children}</section>;
+}
+
+function Heading() {
+  return (
+    <div className="flex items-center gap-2">
+      <ChefHat className="h-4 w-4 text-accent" aria-hidden="true" />
+      <h3 className="text-label text-ink-faint">Dinner ideas</h3>
+    </div>
+  );
 }
 
 function EmptyState() {
   return (
-    <Card className="border-indigo-500/20">
-      <CardContent className="p-5 flex flex-col items-center text-center py-8">
-        <ChefHat className="h-10 w-10 text-text-muted/30 mb-3" />
-        <p className="text-sm text-text-muted">No dinner ideas yet</p>
-        <p className="text-xs text-text-muted/70 mt-1">Sign in to get personalized recipe suggestions</p>
-      </CardContent>
-    </Card>
+    <Shell>
+      <Heading />
+      <p className="mt-3 font-display text-title text-ink">Nothing here yet.</p>
+      <p className="mt-2 text-body text-ink-muted">
+        Sign in and we&apos;ll suggest dinners that suit how you eat.
+      </p>
+    </Shell>
   );
 }
 
 function SkeletonLoader() {
   return (
-    <Card className="border-indigo-500/20">
-      <CardContent className="p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <Skeleton className="h-5 w-5 rounded" />
-          <Skeleton className="h-4 w-28" />
-        </div>
-        <div className="flex flex-col items-center text-center py-4">
-          <Skeleton className="h-16 w-16 rounded-full mb-3" />
-          <Skeleton className="h-5 w-40 mb-2" />
-          <Skeleton className="h-3 w-56 mb-2" />
-          <Skeleton className="h-3 w-20" />
-        </div>
-        <div className="flex justify-between items-center pt-2">
-          <Skeleton className="h-4 w-16" />
-          <Skeleton className="h-4 w-24" />
-        </div>
-        <div className="flex justify-center gap-1.5 mt-3">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <Skeleton key={i} className="h-2 w-2 rounded-full" />
-          ))}
-        </div>
-      </CardContent>
-    </Card>
+    <Shell>
+      <Skeleton className="h-4 w-28 rounded" />
+      <Skeleton className="h-10 w-10 rounded-md mt-4" />
+      <Skeleton className="h-7 w-44 rounded mt-3" />
+      <Skeleton className="h-4 w-full rounded mt-3" />
+      <Skeleton className="h-4 w-24 rounded mt-2" />
+      <Skeleton className="h-12 w-full rounded-md mt-5" />
+    </Shell>
   );
 }
 
-export default function DinnerIdeasCarousel({ profileId, loading }: DinnerIdeasCarouselProps) {
+export default function DinnerIdeasCarousel({ profileId }: DinnerIdeasCarouselProps) {
   const navigate = useNavigate();
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [direction, setDirection] = useState(1);
+  const [direction, setDirection] = useState<1 | -1>(1);
   const [allRecipes, setAllRecipes] = useState<Recipe[]>([]);
   const [isFetchingMore, setIsFetchingMore] = useState(false);
   const [loadMoreFailed, setLoadMoreFailed] = useState(false);
   const hasFetchedRef = useRef(false);
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error, isFetching, refetch } = useQuery({
     queryKey: ['recipes', profileId],
     queryFn: () => dashboardExtended.getRecipes(profileId).then((r) => r.data),
     enabled: !!profileId,
@@ -111,8 +117,22 @@ export default function DinnerIdeasCarousel({ profileId, loading }: DinnerIdeasC
 
   const recipes = allRecipes.length > 0 ? allRecipes : [];
 
-  if (loading || isLoading) {
+  if (isLoading) {
     return <SkeletonLoader />;
+  }
+
+  // Without this the carousel showed an empty state when the request had in
+  // fact failed — an outage rendered as an empty result, which is the one
+  // thing an empty state must never mean.
+  if (error && !isCancellation(error) && recipes.length === 0) {
+    return (
+      <Shell>
+        <Heading />
+        <div className="mt-4">
+          <ErrorState error={describeError(error)} onRetry={() => refetch()} retrying={isFetching} />
+        </div>
+      </Shell>
+    );
   }
 
   if (recipes.length === 0) {
@@ -138,114 +158,112 @@ export default function DinnerIdeasCarousel({ profileId, loading }: DinnerIdeasC
     });
   };
 
-  const slideVariants = {
-    enter: (dir: number) => ({
-      x: dir > 0 ? 200 : -200,
-      opacity: 0,
-    }),
-    center: {
-      x: 0,
-      opacity: 1,
-    },
-    exit: (dir: number) => ({
-      x: dir > 0 ? -200 : 200,
-      opacity: 0,
-    }),
-  };
-
   const visibleDots = Math.min(recipes.length, 7);
   const dotStart = Math.max(0, currentIndex - Math.floor(visibleDots / 2));
   const dotEnd = Math.min(recipes.length, dotStart + visibleDots);
 
   return (
-    <Card className="border-indigo-500/20">
-      <CardContent className="p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <ChefHat className="h-5 w-5 text-indigo-400" />
-          <p className="text-sm font-semibold text-text-primary">Dinner Ideas</p>
-        </div>
+    <Shell>
+      <Heading />
 
-        <div className="relative overflow-hidden min-h-[180px]">
-          <AnimatePresence mode="wait" custom={direction}>
-            <motion.div
-              key={currentIndex}
-              custom={direction}
-              variants={slideVariants}
-              initial="enter"
-              animate="center"
-              exit="exit"
-              transition={{ duration: 0.3, ease: 'easeInOut' }}
-              className="flex flex-col items-center text-center py-2"
+      <div className="relative overflow-hidden min-h-[212px] mt-4" aria-live="polite">
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={currentIndex}
+            variants={step(direction)}
+            initial="hidden"
+            animate="visible"
+            exit="exit"
+            transition={transition(durations.enter)}
+          >
+            {/* The recipe's own emoji is content the model chose for this dish,
+                not an icon standing in for a control. */}
+            <span
+              className="flex h-12 w-12 items-center justify-center rounded-md bg-accent-soft text-2xl leading-none"
+              role="img"
+              aria-label={currentRecipe.name}
             >
-              <span className="text-4xl mb-3" role="img" aria-label={currentRecipe.name}>
-                {currentRecipe.emoji}
-              </span>
-              <p className="text-base font-semibold text-text-primary mb-1">{currentRecipe.name}</p>
-              <p className="text-sm text-text-muted leading-relaxed max-w-[250px]">{currentRecipe.description}</p>
-              <p className="text-xs text-text-muted mt-2 flex items-center gap-1">
-                <span>⏱️</span> {currentRecipe.prepTime}
-              </p>
-            </motion.div>
-          </AnimatePresence>
-        </div>
+              {currentRecipe.emoji}
+            </span>
+            <p className="font-display text-title text-ink mt-3 break-words">{currentRecipe.name}</p>
+            <p className="text-body text-ink-muted mt-2 max-w-reading break-words">{currentRecipe.description}</p>
+            <p className="mt-3 inline-flex items-center rounded-full bg-sunk px-3 py-1 text-label text-ink-muted">
+              <span className="tabular">{currentRecipe.prepTime}</span>&nbsp;to make
+            </p>
+          </motion.div>
+        </AnimatePresence>
+      </div>
 
-        <div className="flex justify-between items-center pt-3 border-t border-border mt-3">
-          <button
-            onClick={handleSkip}
-            className="text-sm text-indigo-400 hover:text-indigo-300 transition-colors font-medium flex items-center gap-1"
-            aria-label="Skip to next recipe"
-          >
-            Skip <SkipForward className="h-3.5 w-3.5" />
-          </button>
-          <button
-            onClick={handleCookThis}
-            className="text-sm text-primary hover:text-primary/80 transition-colors font-medium flex items-center gap-1"
-            aria-label="Go to recipes page"
-          >
-            Cook this <ArrowRight className="h-3.5 w-3.5" />
-          </button>
-        </div>
+      {/* Stacked, never side by side. This card lives in a narrow rail at every
+          width, and two labelled buttons on one row truncated the primary
+          action to "Let's c…" — a button whose own label is cut off. */}
+      <div className="mt-5 flex flex-col gap-2">
+        <Button size="md" onClick={handleCookThis} className="w-full">
+          Let&apos;s cook this
+          <ArrowRight className="h-4 w-4 flex-shrink-0" aria-hidden="true" />
+        </Button>
+        <Button
+          size="md"
+          variant="secondary"
+          onClick={handleSkip}
+          aria-label="Show me a different dinner idea"
+          className="w-full"
+        >
+          <RotateCw className="h-4 w-4 flex-shrink-0" aria-hidden="true" />
+          Something else
+        </Button>
+      </div>
 
-        <div className="flex justify-center gap-1.5 mt-3">
-          {recipes.slice(dotStart, dotEnd).map((_: Recipe, i: number) => {
-            const actualIndex = dotStart + i;
-            return (
-              <button
-                key={actualIndex}
-                onClick={() => {
-                  setDirection(actualIndex > currentIndex ? 1 : -1);
-                  setCurrentIndex(actualIndex);
-                }}
-                className={`h-2 rounded-full transition-all duration-200 ${
-                  actualIndex === currentIndex ? 'w-5 bg-indigo-400' : 'w-2 bg-border'
-                }`}
-                aria-label={`Go to recipe ${actualIndex + 1}`}
-              />
-            );
-          })}
-        </div>
-
-        {remaining > 0 && (
-          <p className="text-center text-xs text-text-muted mt-2">
-            Tap to see {remaining} more
-          </p>
-        )}
-        {isFetchingMore && (
-          <p className="text-center text-xs text-text-muted mt-1">Finding more ideas…</p>
-        )}
-        {loadMoreFailed && !isFetchingMore && (
-          <p role="status" className="text-center text-xs text-text-muted mt-1">
-            Couldn&apos;t load more ideas.{' '}
+      <div className="flex gap-1.5 mt-5" role="group" aria-label="Dinner ideas">
+        {recipes.slice(dotStart, dotEnd).map((recipe: Recipe, i: number) => {
+          const actualIndex = dotStart + i;
+          const isCurrent = actualIndex === currentIndex;
+          return (
             <button
+              key={actualIndex}
               type="button"
-              onClick={() => fetchMore()}
-              className="underline underline-offset-2 hover:text-text-primary rounded focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+              aria-current={isCurrent ? 'true' : undefined}
+              onClick={() => {
+                setDirection(actualIndex > currentIndex ? 1 : -1);
+                setCurrentIndex(actualIndex);
+              }}
+              // The dot is 2px tall but the target around it is not: the
+              // padding gives a thumb something to land on.
+              className="py-2 -my-2 rounded focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+              aria-label={recipe.name}
             >
-              Try again
+              <span
+                className={`block h-2 rounded-full transition-all duration-micro ease-entrance ${
+                  isCurrent ? 'w-6 bg-primary' : 'w-2 bg-line-strong/60'
+                }`}
+              />
             </button>
-          </p>
-        )}
-      </CardContent>
-    </Card>
+          );
+        })}
+      </div>
+
+      {remaining > 0 && (
+        <p className="text-caption text-ink-faint mt-3">
+          <span className="tabular">{remaining}</span> more to look at.
+        </p>
+      )}
+      {isFetchingMore && (
+        <p className="text-caption text-ink-faint mt-1" role="status">
+          Looking for more…
+        </p>
+      )}
+      {loadMoreFailed && !isFetchingMore && (
+        <p role="status" className="text-caption text-ink-muted mt-1">
+          Couldn&apos;t find more just now.{' '}
+          <button
+            type="button"
+            onClick={() => fetchMore()}
+            className="underline underline-offset-2 hover:text-ink rounded focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+          >
+            Try again
+          </button>
+        </p>
+      )}
+    </Shell>
   );
 }

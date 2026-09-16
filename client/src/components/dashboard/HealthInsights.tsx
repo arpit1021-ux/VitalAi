@@ -2,6 +2,7 @@ import { motion } from 'framer-motion';
 import { Lightbulb } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { rise, stagger, transition, durations } from '@/lib/motion';
 
 interface HealthInsightsProps {
   insights: string[];
@@ -30,31 +31,35 @@ export default function HealthInsights({ insights, loading }: HealthInsightsProp
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
-          <Lightbulb className="h-5 w-5 text-warning" />
-          Health Insights
+          <Lightbulb className="h-5 w-5 flex-shrink-0 text-primary" aria-hidden="true" />
+          What we've noticed
         </CardTitle>
+        <p className="text-caption text-ink-muted">Put together once a week</p>
       </CardHeader>
       <CardContent>
-        <p className="text-xs text-text-muted mb-3">Generated weekly</p>
-        <div className="space-y-3">
-          {insights.map((insight, i) => (
-            <motion.div
-              key={i}
-              initial={{ opacity: 0, x: -10 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: i * 0.1 }}
-              className="flex items-start gap-3"
-            >
-              <Lightbulb className="h-4 w-4 text-warning flex-shrink-0 mt-0.5" />
-              <p className="text-sm text-text-primary leading-relaxed">{insight}</p>
-            </motion.div>
-          ))}
-          {insights.length === 0 && (
-            <p className="text-sm text-text-muted text-center py-4">
-              No insights yet. Keep tracking your health data!
-            </p>
-          )}
-        </div>
+        {insights.length === 0 ? (
+          <p className="py-4 text-body text-ink-muted">
+            Nothing to say yet. Keep tracking and patterns turn up soon enough.
+          </p>
+        ) : (
+          <motion.ul
+            variants={stagger()}
+            initial="hidden"
+            animate="visible"
+            className="divide-y divide-line border-y border-line"
+          >
+            {insights.map((insight, i) => (
+              <motion.li
+                key={i}
+                variants={rise}
+                transition={transition(durations.enter)}
+                className="max-w-reading py-3 text-body-lg text-ink break-words"
+              >
+                {insight}
+              </motion.li>
+            ))}
+          </motion.ul>
+        )}
       </CardContent>
     </Card>
   );

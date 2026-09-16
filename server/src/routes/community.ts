@@ -8,6 +8,8 @@ import { parseJsonResponse } from '../utils/parseJsonResponse.js';
 import CommunityPost from '../models/CommunityPost.js';
 import Profile from '../models/Profile.js';
 import { objectId, validate } from '../middleware/validate.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
+import { forbidden, notFound } from '../utils/AppError.js';
 
 const feedQuerySchema = z.object({
   sort: z.enum(['recent', 'trending']).default('recent'),
@@ -68,168 +70,142 @@ Return JSON: { "approved": true/false, "note": "reason if flagged" }`;
   }
 }
 
-router.get('/feed', validate({ query: feedQuerySchema }), async (req: Request, res: Response) => {
-  try {
-    const viewerId = new mongoose.Types.ObjectId(req.jwtUser!.id);
-    const { sort, page, limit } = req.query as unknown as z.infer<typeof feedQuerySchema>;
-    const skip = (page - 1) * limit;
+router.get('/feed', validate({ query: feedQuerySchema }), asyncHandler(async (req: Request, res: Response) => {
+  const viewerId = new mongoose.Types.ObjectId(req.jwtUser!.id);
+  const { sort, page, limit } = req.query as unknown as z.infer<typeof feedQuerySchema>;
+  const skip = (page - 1) * limit;
 
-    const query: any = { status: 'published' };
-    const sortOption: any = sort === 'trending'
-      ? { likeCount: -1, createdAt: -1 }
-      : { createdAt: -1 };
+  const query: any = { status: 'published' };
+  const sortOption: any = sort === 'trending'
+    ? { likeCount: -1, createdAt: -1 }
+    : { createdAt: -1 };
 
-    const posts = await CommunityPost.find(query)
-      .sort(sortOption)
-      .skip(skip)
-      .limit(limit)
-      .populate('profileId', 'name avatar');
+  const posts = await CommunityPost.find(query)
+    .sort(sortOption)
+    .skip(skip)
+    .limit(limit)
+    .populate('profileId', 'name avatar');
 
-    const total = await CommunityPost.countDocuments(query);
+  const total = await CommunityPost.countDocuments(query);
 
-    const enrichedPosts = posts.map((post) => ({
-      _id: post._id,
-      type: post.type,
-      title: post.title,
-      content: post.content,
-      condition: post.condition,
-      dietaryTags: post.dietaryTags,
-      imageUrl: post.imageUrl,
-      likes: post.likeCount,
-      commentCount: post.commentCount,
-      isLiked: post.likes.some((id) => id.equals(viewerId)),
-      author: {
-        name: (post.profileId as any)?.name || 'Anonymous',
-        avatar: (post.profileId as any)?.avatar || '👤',
-      },
-      createdAt: post.createdAt,
-    }));
+  const enrichedPosts = posts.map((post) => ({
+    _id: post._id,
+    type: post.type,
+    title: post.title,
+    content: post.content,
+    condition: post.condition,
+    dietaryTags: post.dietaryTags,
+    imageUrl: post.imageUrl,
+    likes: post.likeCount,
+    commentCount: post.commentCount,
+    isLiked: post.likes.some((id) => id.equals(viewerId)),
+    author: {
+      name: (post.profileId as any)?.name || 'Anonymous',
+      avatar: (post.profileId as any)?.avatar || '👤',
+    },
+    createdAt: post.createdAt,
+  }));
 
-    res.json({ posts: enrichedPosts, total, page, totalPages: Math.ceil(total / limit) });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch feed' });
+  res.json({ posts: enrichedPosts, total, page, totalPages: Math.ceil(total / limit) });
+}));
+
+// Validated by the middleware: a ZodError caught here lost the field it
+// belonged to, and the same catch swallowed AppError into a generic 500.
+router.post('/', validate({ body: createPostSchema }), asyncHandler(async (req: Request, res: Response) => {
+  const data = req.body as z.infer<typeof createPostSchema>;
+
+  const profile = await Profile.findOne({
+    _id: data.profileId,
+    userId: req.jwtUser!.id,
+  });
+  if (!profile) {
+    throw notFound('That profile');
   }
-});
 
-router.post('/', async (req: Request, res: Response) => {
-  try {
-    const data = createPostSchema.parse(req.body);
+  const moderation = await moderatePost(data.content, data.type, req.jwtUser!.id);
 
-    const profile = await Profile.findOne({
-      _id: data.profileId,
-      userId: req.jwtUser!.id,
-    });
-    if (!profile) {
-      res.status(404).json({ error: 'Profile not found' });
-      return;
-    }
+  const post = await CommunityPost.create({
+    userId: req.jwtUser!.id,
+    profileId: data.profileId,
+    type: data.type,
+    title: data.title,
+    content: data.content,
+    condition: data.condition,
+    dietaryTags: data.dietaryTags,
+    status: moderation.approved ? 'published' : 'pending_review',
+    moderationNote: moderation.note,
+  });
 
-    const moderation = await moderatePost(data.content, data.type, req.jwtUser!.id);
-
-    const post = await CommunityPost.create({
-      userId: req.jwtUser!.id,
-      profileId: data.profileId,
-      type: data.type,
-      title: data.title,
-      content: data.content,
-      condition: data.condition,
-      dietaryTags: data.dietaryTags,
-      status: moderation.approved ? 'published' : 'pending_review',
-      moderationNote: moderation.note,
-    });
-
-    res.status(201).json({
-      post: {
-        _id: post._id,
-        type: post.type,
-        title: post.title,
-        content: post.content,
-        status: post.status,
-        moderationNote: post.moderationNote,
-        createdAt: post.createdAt,
-      },
-    });
-  } catch (error) {
-    if (error instanceof z.ZodError) {
-      res.status(400).json({ error: error.errors[0].message });
-      return;
-    }
-    res.status(500).json({ error: 'Failed to create post' });
-  }
-});
-
-router.post('/:id/like', validate({ params: z.object({ id: objectId }) }), async (req: Request, res: Response) => {
-  try {
-    const post = await CommunityPost.findById(req.params.id);
-    if (!post) {
-      res.status(404).json({ error: 'Post not found' });
-      return;
-    }
-
-    const userId = new mongoose.Types.ObjectId(req.jwtUser!.id);
-    const index = post.likes.findIndex((id) => id.equals(userId));
-    const liking = index === -1;
-
-    if (liking) {
-      post.likes.push(userId);
-    } else {
-      post.likes.splice(index, 1);
-    }
-    post.likeCount = post.likes.length;
-    await post.save();
-
-    res.json({ likes: post.likeCount, isLiked: liking });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to toggle like' });
-  }
-});
-
-router.delete('/:id', validate({ params: z.object({ id: objectId }) }), async (req: Request, res: Response) => {
-  try {
-    const post = await CommunityPost.findById(req.params.id);
-    if (!post) {
-      res.status(404).json({ error: 'Post not found' });
-      return;
-    }
-
-    if (post.userId.toString() !== req.jwtUser!.id) {
-      res.status(403).json({ error: 'Not authorized' });
-      return;
-    }
-
-    await CommunityPost.findByIdAndDelete(req.params.id);
-    res.json({ message: 'Post deleted' });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to delete post' });
-  }
-});
-
-router.get('/my-posts', async (req: Request, res: Response) => {
-  try {
-    const posts = await CommunityPost.find({ userId: req.jwtUser!.id })
-      .sort({ createdAt: -1 })
-      .populate('profileId', 'name avatar');
-
-    const enrichedPosts = posts.map((post) => ({
+  res.status(201).json({
+    post: {
       _id: post._id,
       type: post.type,
       title: post.title,
       content: post.content,
       status: post.status,
       moderationNote: post.moderationNote,
-      likes: post.likeCount,
-      commentCount: post.commentCount,
-      author: {
-        name: (post.profileId as any)?.name || 'Anonymous',
-        avatar: (post.profileId as any)?.avatar || '👤',
-      },
       createdAt: post.createdAt,
-    }));
+    },
+  });
+}));
 
-    res.json({ posts: enrichedPosts });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch posts' });
+router.post('/:id/like', validate({ params: z.object({ id: objectId }) }), asyncHandler(async (req: Request, res: Response) => {
+  const post = await CommunityPost.findById(req.params.id);
+  if (!post) {
+    throw notFound('That post');
   }
-});
+
+  const userId = new mongoose.Types.ObjectId(req.jwtUser!.id);
+  const index = post.likes.findIndex((id) => id.equals(userId));
+  const liking = index === -1;
+
+  if (liking) {
+    post.likes.push(userId);
+  } else {
+    post.likes.splice(index, 1);
+  }
+  post.likeCount = post.likes.length;
+  await post.save();
+
+  res.json({ likes: post.likeCount, isLiked: liking });
+}));
+
+router.delete('/:id', validate({ params: z.object({ id: objectId }) }), asyncHandler(async (req: Request, res: Response) => {
+  const post = await CommunityPost.findById(req.params.id);
+  if (!post) {
+    throw notFound('That post');
+  }
+
+  if (post.userId.toString() !== req.jwtUser!.id) {
+    throw forbidden('That was created by someone else.');
+  }
+
+  await CommunityPost.findByIdAndDelete(req.params.id);
+  res.json({ message: 'Post deleted' });
+}));
+
+router.get('/my-posts', asyncHandler(async (req: Request, res: Response) => {
+  const posts = await CommunityPost.find({ userId: req.jwtUser!.id })
+    .sort({ createdAt: -1 })
+    .populate('profileId', 'name avatar');
+
+  const enrichedPosts = posts.map((post) => ({
+    _id: post._id,
+    type: post.type,
+    title: post.title,
+    content: post.content,
+    status: post.status,
+    moderationNote: post.moderationNote,
+    likes: post.likeCount,
+    commentCount: post.commentCount,
+    author: {
+      name: (post.profileId as any)?.name || 'Anonymous',
+      avatar: (post.profileId as any)?.avatar || '👤',
+    },
+    createdAt: post.createdAt,
+  }));
+
+  res.json({ posts: enrichedPosts });
+}));
 
 export default router;

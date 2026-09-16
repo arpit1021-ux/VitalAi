@@ -1,12 +1,17 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
+import { useNavigate, Link } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
+import { AnimatePresence, motion } from 'framer-motion';
 import { Plus, X, ArrowRight, ArrowLeft, Check, Pencil, Trash2 } from 'lucide-react';
 import { useProfileStore } from '@/stores/profileStore';
+import { account } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { ErrorState } from '@/components/shared/ErrorState';
+import { describeError, type DescribedError } from '@/lib/errors';
+import { step as stepMotion, transition } from '@/lib/motion';
 
 const avatarEmojis = ['🍎', '💪', '🧘', '🏃‍♀️', '🧠', '❤️', '🥗', '💊', '🩺', '🥦', '🏋️', '🚴', '🧑‍⚕️', '🫀', '🦷', '🌙', '☀️', '🫁', '🦴', '👁️'];
 
@@ -16,6 +21,153 @@ const dietOptions = ['vegetarian', 'vegan', 'eggetarian', 'non-veg', 'jain', 'ke
 const fitnessOptions = ['weight-loss', 'muscle-gain', 'maintenance', 'endurance'];
 const activityOptions = ['sedentary', 'lightly-active', 'active', 'very-active'];
 
+/**
+ * The wizard, said out loud.
+ *
+ * A three-step health form with no framing reads as bureaucracy — people
+ * abandon it or lie to it. Each step gets a name and one line on *why* it is
+ * being asked, because someone who knows what a question is for answers it
+ * accurately.
+ */
+const STEPS = [
+  {
+    name: 'Who this is for',
+    why: 'Just a name and a few basics, so we know whose plate we are looking at.',
+  },
+  {
+    name: 'Food and health',
+    why: 'Allergies matter most — this is what we check every label against.',
+  },
+  {
+    name: 'Day to day',
+    why: 'The last bit. It shapes the portions and the recipes we suggest.',
+  },
+] as const;
+
+/**
+ * Which step of the wizard owns each field the server can reject. A rejected
+ * field is useless if it is announced on a step the person cannot see, so a
+ * server-side validation failure sends them back to the step holding it.
+ */
+/** What /account/consent reports about this account's agreement. */
+interface ConsentState {
+  currentVersion: string;
+  upToDate: boolean;
+}
+
+const stepForField: Record<string, number> = {
+  name: 1,
+  age: 1,
+  gender: 1,
+  avatar: 1,
+  dietType: 2,
+  allergies: 2,
+  conditions: 2,
+  medications: 3,
+  fitnessGoal: 3,
+  activityLevel: 3,
+};
+
+/** A message shown under the input it concerns, never in a banner at the top. */
+function FieldError({ id, message }: { id: string; message?: string }) {
+  if (!message) return null;
+  return (
+    <p id={id} role="alert" className="text-caption text-danger">
+      {message}
+    </p>
+  );
+}
+
+/** Field labels, sized and coloured like every other label in the product. */
+function GroupLabel({ children, htmlFor }: { children: React.ReactNode; htmlFor?: string }) {
+  return (
+    <label htmlFor={htmlFor} className="block text-label text-ink">
+      {children}
+    </label>
+  );
+}
+
+const chipBase =
+  'inline-flex items-center justify-center min-h-[44px] px-4 rounded-full text-body transition-colors duration-micro ease-entrance focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary';
+
+function Chip({
+  selected,
+  onClick,
+  children,
+}: {
+  selected: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={selected}
+      onClick={onClick}
+      className={`${chipBase} ${
+        selected
+          ? 'bg-primary text-ink-inverse shadow-button'
+          : 'bg-sunk text-ink-muted hover:text-ink border-2 border-ink/10'
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+/**
+ * Where you are and how much is left, named rather than numbered alone.
+ *
+ * "Step 2 of 3" tells someone they are not lost; "Food and health" tells them
+ * what they are in the middle of.
+ */
+function StepIndicator({ current }: { current: number }) {
+  return (
+    <nav aria-label="Profile setup progress" className="space-y-2">
+      <p className="text-label text-ink-muted">
+        <span className="font-mono tabular-nums text-ink">
+          Step {current} of {STEPS.length}
+        </span>
+        <span className="sm:hidden"> · {STEPS[current - 1].name}</span>
+      </p>
+      <ol className="flex gap-1.5">
+        {STEPS.map((s, i) => {
+          const index = i + 1;
+          const state = index < current ? 'done' : index === current ? 'current' : 'upcoming';
+          return (
+            <li
+              key={s.name}
+              className="flex-1"
+              aria-current={state === 'current' ? 'step' : undefined}
+            >
+              <span
+                className={`block h-1.5 rounded-full transition-colors duration-enter ease-entrance ${
+                  state === 'upcoming' ? 'bg-sunk' : 'bg-primary'
+                }`}
+              />
+              <span className="sr-only">
+                {s.name} — {state === 'done' ? 'done' : state === 'current' ? 'current step' : 'still to come'}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+      <ol className="hidden sm:flex gap-1.5" aria-hidden="true">
+        {STEPS.map((s, i) => (
+          <li
+            key={s.name}
+            className={`flex-1 text-caption truncate ${
+              i + 1 === current ? 'text-ink' : 'text-ink-faint'
+            }`}
+          >
+            {s.name}
+          </li>
+        ))}
+      </ol>
+    </nav>
+  );
+}
+
 export default function ProfileSetupPage() {
   const navigate = useNavigate();
   const { profiles, addProfile, removeProfile, setActiveProfile } = useProfileStore();
@@ -23,6 +175,14 @@ export default function ProfileSetupPage() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
   const [allergyInput, setAllergyInput] = useState('');
   const [step, setStep] = useState(1);
+  /** Which way the last move went, so the transition reads as travel. */
+  const [direction, setDirection] = useState<1 | -1>(1);
+  const [saving, setSaving] = useState(false);
+  const [saveFailure, setSaveFailure] = useState<DescribedError | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [agreedToHealthProcessing, setAgreedToHealthProcessing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteFailure, setDeleteFailure] = useState<DescribedError | null>(null);
   const [form, setForm] = useState({
     name: '',
     age: '',
@@ -35,6 +195,14 @@ export default function ProfileSetupPage() {
     fitnessGoal: 'maintenance',
     activityLevel: 'lightly-active',
   });
+
+  const firstRun = profiles.length === 0;
+
+  /** Moves between steps and records the direction for the transition. */
+  const goToStep = (next: number) => {
+    setDirection(next >= step ? 1 : -1);
+    setStep(next);
+  };
 
   const toggleCondition = (value: string) => {
     setForm((prev) => ({
@@ -85,8 +253,64 @@ export default function ProfileSetupPage() {
     }));
   };
 
+  const clearFieldError = (field: string) =>
+    setFieldErrors((prev) => {
+      if (!prev[field]) return prev;
+      const next = { ...prev };
+      delete next[field];
+      return next;
+    });
+
+  const openWizard = () => {
+    setStep(1);
+    setDirection(1);
+    setSaveFailure(null);
+    setFieldErrors({});
+    setShowCreateModal(true);
+  };
+
+  /**
+   * Whether this account has agreed to the current terms.
+   *
+   * The server refuses to create a profile without it, and this wizard is the
+   * only screen a new account can reach — ProfileGuard routes everything else
+   * here until a profile exists. Asking anywhere else made consent
+   * unobtainable and profile creation impossible.
+   */
+  const consentQuery = useQuery<ConsentState>({
+    queryKey: ['consent'],
+    queryFn: () => account.getConsent().then((r) => r.data as ConsentState),
+  });
+
+  const consentNeeded = consentQuery.data ? !consentQuery.data.upToDate : false;
+
   const handleSave = async () => {
+    // Checked here rather than by disabling the button, so the reason is said
+    // out loud under the field it concerns.
+    if (!form.name.trim()) {
+      setSaveFailure(null);
+      setFieldErrors({ name: 'Enter a name for this profile.' });
+      goToStep(1);
+      return;
+    }
+
+    if (consentNeeded && !agreedToHealthProcessing) {
+      setSaveFailure(null);
+      setFieldErrors({ consent: 'Tick the box above to continue — a profile holds health information, so we need your agreement first.' });
+      return;
+    }
+
+    setSaving(true);
+    setSaveFailure(null);
+    setFieldErrors({});
     try {
+      // Recorded before the profile, because the profile is what the consent
+      // is for: if this fails, no health data has been stored.
+      if (consentNeeded && consentQuery.data) {
+        await account.acceptConsent(consentQuery.data.currentVersion);
+        await consentQuery.refetch();
+      }
+
       await addProfile({
         name: form.name,
         age: parseInt(form.age) || 0,
@@ -99,318 +323,562 @@ export default function ProfileSetupPage() {
         fitnessGoal: form.fitnessGoal,
         activityLevel: form.activityLevel,
       });
+      setShowCreateModal(false);
       navigate('/');
     } catch (e) {
-      alert('Failed to save profile. Please try again.');
+      const described = describeError(e);
+      const fields = described.fields ?? {};
+      const named = Object.keys(fields);
+
+      // Everything typed stays on screen — the dialog is never closed and the
+      // form is never cleared by a failure.
+      if (named.length > 0) {
+        setFieldErrors(fields);
+        // Show the earliest step that holds a rejected field; a message under
+        // an input on a step nobody can see is the same as no message at all.
+        goToStep(Math.min(...named.map((field) => stepForField[field] ?? step)));
+      } else {
+        setSaveFailure(described);
+      }
+    } finally {
+      // Always cleared, so a failure never leaves the button spinning.
+      setSaving(false);
     }
   };
 
   const handleDelete = async (profileId: string) => {
-    await removeProfile(profileId);
-    setShowDeleteConfirm(null);
+    setDeleting(true);
+    setDeleteFailure(null);
+    try {
+      await removeProfile(profileId);
+      setShowDeleteConfirm(null);
+    } catch (e) {
+      setDeleteFailure(describeError(e));
+    } finally {
+      setDeleting(false);
+    }
   };
 
   // Deleting the last profile would leave the account with nowhere to store
   // health data, so one must always remain.
   const canDelete = () => profiles.length > 1;
 
-  return (
-    <div className="min-h-screen bg-background p-4 lg:p-8">
-      <div className="max-w-4xl mx-auto">
-        <h1 className="text-3xl font-bold text-text-primary mb-2">Health Profiles</h1>
-        <p className="text-text-muted mb-8">Create profiles for personalized health insights</p>
+  const stepVariants = stepMotion(direction);
 
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 mb-8">
-          {profiles.map((profile) => (
-            <motion.div key={profile._id} whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
-              <Card className="cursor-pointer text-center hover:border-primary/50 transition-colors relative group">
-                <CardContent className="p-6">
-                  <div className="flex items-center justify-between mb-2">
+  return (
+    <div className="min-h-screen bg-ground p-4 sm:p-6 lg:p-8">
+      <div className="max-w-4xl mx-auto">
+        <h1 className="font-display text-display text-ink text-balance">
+          {firstRun ? "Let's set up your profile" : 'Health profiles'}
+        </h1>
+        <p className="mt-3 max-w-reading text-body-lg text-ink-muted">
+          {firstRun
+            ? 'This is what every label gets checked against — your allergies, anything you are managing, and how you like to eat. It takes about a minute, and you can change all of it later.'
+            : 'One for each person you look after. Their guidance, their scans and their pantry stay separate.'}
+        </p>
+
+        {firstRun ? (
+          <div className="mt-8">
+            <Button size="lg" onClick={openWizard}>
+              Start setting up
+            </Button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 mt-8">
+            {profiles.map((profile) => (
+              <Card key={profile._id} className="text-center relative">
+                <CardContent className="p-4 pt-4">
+                  <div className="flex items-center justify-between mb-1">
                     <button
+                      type="button"
                       onClick={(e) => {
                         e.stopPropagation();
                         navigate(`/profile/edit?id=${profile._id}`);
                       }}
-                      className="p-1 rounded-lg hover:bg-surface transition-colors"
+                      className="flex h-11 w-11 items-center justify-center rounded hover:bg-sunk transition-colors duration-micro focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                       aria-label={`Edit ${profile.name}'s profile`}
                     >
-                      <Pencil className="h-3.5 w-3.5 text-text-muted" />
+                      <Pencil className="h-4 w-4 text-ink-muted" aria-hidden="true" />
                     </button>
                     {canDelete() ? (
                       <button
+                        type="button"
                         onClick={(e) => {
                           e.stopPropagation();
                           setShowDeleteConfirm(profile._id);
                         }}
-                        className="p-1 rounded-lg hover:bg-danger/10 transition-colors"
+                        className="flex h-11 w-11 items-center justify-center rounded hover:bg-danger-soft transition-colors duration-micro focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                         aria-label={`Delete ${profile.name}'s profile`}
                       >
-                        <Trash2 className="h-3.5 w-3.5 text-danger" />
+                        <Trash2 className="h-4 w-4 text-danger" aria-hidden="true" />
                       </button>
                     ) : (
-                      <div className="w-[23px]" />
+                      <span className="h-11 w-11" />
                     )}
                   </div>
-                  <div
+                  <button
+                    type="button"
                     onClick={() => {
                       setActiveProfile(profile);
                       navigate('/');
                     }}
-                    className="cursor-pointer"
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        setActiveProfile(profile);
-                        navigate('/');
-                      }
-                    }}
+                    className="w-full rounded px-2 py-3 hover:bg-sunk/50 transition-colors duration-micro focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                   >
-                    <span className="text-4xl block mb-3">{profile.avatar}</span>
-                    <p className="font-medium text-text-primary">{profile.name}</p>
-                    <p className="text-xs text-text-muted mt-1">
+                    <span className="text-4xl block mb-2" aria-hidden="true">{profile.avatar}</span>
+                    <span className="block text-heading text-ink break-words">{profile.name}</span>
+                    <span className="block text-caption text-ink-muted mt-1 break-words">
                       {profile.age ? `${profile.age} · ` : ''}{profile.dietType || 'No diet set'}
-                    </p>
-                  </div>
+                    </span>
+                  </button>
                 </CardContent>
               </Card>
-            </motion.div>
-          ))}
+            ))}
 
-          <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
-            <Card
-              className="cursor-pointer text-center border-dashed hover:border-primary/50 transition-colors min-h-[140px] flex items-center justify-center"
-              onClick={() => {
-                setStep(1);
-                setShowCreateModal(true);
-              }}
+            <button
+              type="button"
+              onClick={openWizard}
+              className="min-h-[140px] rounded-md border-2 border-dashed border-line-strong/60 bg-transparent flex flex-col items-center justify-center gap-2 text-ink-muted hover:border-primary hover:text-ink transition-colors duration-micro focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
             >
-              <CardContent className="p-6 flex flex-col items-center">
-                <Plus className="h-8 w-8 text-text-muted mb-2" />
-                <p className="text-sm text-text-muted">Add Profile</p>
-              </CardContent>
-            </Card>
-          </motion.div>
-        </div>
+              <Plus className="h-6 w-6" aria-hidden="true" />
+              <span className="text-label">Add someone</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Delete Confirmation Dialog */}
-      <Dialog open={!!showDeleteConfirm} onOpenChange={() => setShowDeleteConfirm(null)}>
+      <Dialog
+        open={!!showDeleteConfirm}
+        onOpenChange={(open) => {
+          if (deleting) return;
+          if (!open) {
+            setShowDeleteConfirm(null);
+            setDeleteFailure(null);
+          }
+        }}
+      >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Delete Profile</DialogTitle>
+            <DialogTitle>Delete this profile?</DialogTitle>
           </DialogHeader>
-          <p className="text-sm text-text-muted">
-            This will permanently delete this profile and all their data. This action cannot be undone.
+          <p className="text-body text-ink-muted">
+            This permanently deletes{' '}
+            <span className="font-semibold text-ink">
+              {profiles.find((p) => p._id === showDeleteConfirm)?.name ?? 'this profile'}
+            </span>{' '}
+            and everything recorded against it — health details, scans, conversations and daily
+            logs. It happens immediately, cannot be undone, and there is no backup to restore from.
           </p>
+
+          {deleteFailure && (
+            <ErrorState
+              error={deleteFailure}
+              onRetry={() => showDeleteConfirm && void handleDelete(showDeleteConfirm)}
+              retrying={deleting}
+            />
+          )}
+
           <div className="flex gap-3 mt-4">
-            <Button variant="outline" className="flex-1" onClick={() => setShowDeleteConfirm(null)}>
+            <Button
+              variant="secondary"
+              className="flex-1"
+              disabled={deleting}
+              onClick={() => {
+                setShowDeleteConfirm(null);
+                setDeleteFailure(null);
+              }}
+            >
               Cancel
             </Button>
             <Button
-              variant="destructive"
+              variant="danger"
               className="flex-1"
-              onClick={() => showDeleteConfirm && handleDelete(showDeleteConfirm)}
+              loading={deleting}
+              loadingLabel="Deleting…"
+              onClick={() => showDeleteConfirm && void handleDelete(showDeleteConfirm)}
             >
-              Delete Profile
+              Delete profile
             </Button>
           </div>
         </DialogContent>
       </Dialog>
 
       {/* Create Profile Dialog */}
-      <Dialog open={showCreateModal} onOpenChange={setShowCreateModal}>
+      <Dialog
+        open={showCreateModal}
+        // A save in flight must not be dismissed out from under the person who
+        // filled three steps of this form.
+        onOpenChange={(open) => {
+          if (saving) return;
+          setShowCreateModal(open);
+        }}
+      >
         <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Create New Profile</DialogTitle>
+            <DialogTitle>{firstRun ? 'Your profile' : 'Add someone'}</DialogTitle>
           </DialogHeader>
 
-          {step === 1 && (
-            <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} className="space-y-6">
-              <div className="space-y-2">
-                <label className="text-sm text-text-muted">Choose Avatar</label>
-                <div className="grid grid-cols-5 gap-2">
-                  {avatarEmojis.map((emoji) => (
-                    <button
-                      key={emoji}
-                      onClick={() => setForm((p) => ({ ...p, avatar: emoji }))}
-                      className={`text-2xl p-2 rounded-xl transition-colors ${
-                        form.avatar === emoji ? 'bg-primary/20 ring-2 ring-primary' : 'hover:bg-surface'
-                      }`}
-                    >
-                      {emoji}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm text-text-muted">Name</label>
-                <Input value={form.name} onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))} placeholder="Enter name" />
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <label className="text-sm text-text-muted">Age</label>
-                  <Input type="number" value={form.age} onChange={(e) => setForm((p) => ({ ...p, age: e.target.value }))} placeholder="Age" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm text-text-muted">Gender</label>
-                  <select
-                    value={form.gender}
-                    onChange={(e) => setForm((p) => ({ ...p, gender: e.target.value }))}
-                    className="flex h-10 w-full rounded-xl border border-border bg-surface px-3 py-2 text-sm text-text-primary"
-                  >
-                    <option value="">Select</option>
-                    <option value="male">Male</option>
-                    <option value="female">Female</option>
-                    <option value="other">Other</option>
-                  </select>
-                </div>
-              </div>
-              <Button onClick={() => setStep(2)} className="w-full" disabled={!form.name}>
-                Next <ArrowRight className="h-4 w-4 ml-2" />
-              </Button>
-            </motion.div>
-          )}
+          <StepIndicator current={step} />
 
-          {step === 2 && (
-            <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} className="space-y-6">
-              <div className="space-y-2">
-                <label className="text-sm text-text-muted">Diet Type</label>
-                <div className="flex flex-wrap gap-2">
-                  {dietOptions.map((diet) => (
-                    <button
-                      key={diet}
-                      onClick={() => setForm((p) => ({ ...p, dietType: diet }))}
-                      className={`px-3 py-1.5 rounded-full text-sm transition-colors ${
-                        form.dietType === diet ? 'bg-primary text-white' : 'bg-surface text-text-muted hover:text-text-primary'
-                      }`}
-                    >
-                      {diet}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm text-text-muted">Allergies</label>
-                <div className="flex flex-wrap gap-2 mb-2">
-                  {form.allergies.map((allergy) => (
-                    <span
-                      key={allergy}
-                      className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm bg-danger/20 text-danger border border-danger/30"
-                    >
-                      {allergy}
-                      <button onClick={() => removeAllergy(allergy)} className="hover:text-danger/80" aria-label={`Remove ${allergy}`}>
-                        <X className="h-3 w-3" />
+          {/* The reason this step is being asked, in one line. Announced on
+              change, because someone using a screen reader gets no equivalent
+              of glancing up at it. */}
+          <p className="text-body text-ink-muted" role="status">
+            {STEPS[step - 1].why}
+          </p>
+
+          <AnimatePresence mode="wait" initial={false}>
+            {step === 1 && (
+              <motion.div
+                key="step-1"
+                variants={stepVariants}
+                initial="hidden"
+                animate="visible"
+                exit="exit"
+                transition={transition()}
+                className="space-y-6"
+              >
+                <div className="space-y-2">
+                  <GroupLabel>Pick a face for this profile</GroupLabel>
+                  <div className="grid grid-cols-5 gap-2">
+                    {avatarEmojis.map((emoji) => (
+                      <button
+                        key={emoji}
+                        type="button"
+                        aria-pressed={form.avatar === emoji}
+                        aria-label={`Avatar ${emoji}`}
+                        onClick={() => setForm((p) => ({ ...p, avatar: emoji }))}
+                        className={`flex min-h-[44px] items-center justify-center rounded text-2xl transition-colors duration-micro focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary ${
+                          form.avatar === emoji ? 'bg-primary-soft ring-2 ring-primary' : 'hover:bg-sunk'
+                        }`}
+                      >
+                        <span aria-hidden="true">{emoji}</span>
                       </button>
-                    </span>
-                  ))}
+                    ))}
+                  </div>
                 </div>
-                <div className="flex flex-wrap gap-2 mb-2">
-                  {presetAllergies.filter((a) => !form.allergies.includes(a)).map((allergy) => (
-                    <button
-                      key={allergy}
-                      onClick={() => addAllergy(allergy)}
-                      className="px-3 py-1 rounded-full text-xs bg-surface text-text-muted hover:text-text-primary hover:border-text-muted/50 border border-border transition-colors"
+                <div className="space-y-2">
+                  <GroupLabel htmlFor="create-name">Name</GroupLabel>
+                  <Input
+                    id="create-name"
+                    value={form.name}
+                    onChange={(e) => {
+                      setForm((p) => ({ ...p, name: e.target.value }));
+                      clearFieldError('name');
+                    }}
+                    placeholder="Whose profile is this?"
+                    invalid={Boolean(fieldErrors.name)}
+                    aria-invalid={Boolean(fieldErrors.name)}
+                    aria-describedby={fieldErrors.name ? 'create-name-error' : undefined}
+                  />
+                  <FieldError id="create-name-error" message={fieldErrors.name} />
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <GroupLabel htmlFor="create-age">Age</GroupLabel>
+                    <Input
+                      id="create-age"
+                      type="number"
+                      inputMode="numeric"
+                      value={form.age}
+                      onChange={(e) => {
+                        setForm((p) => ({ ...p, age: e.target.value }));
+                        clearFieldError('age');
+                      }}
+                      placeholder="Years"
+                      invalid={Boolean(fieldErrors.age)}
+                      aria-invalid={Boolean(fieldErrors.age)}
+                      aria-describedby={fieldErrors.age ? 'create-age-error' : undefined}
+                    />
+                    <FieldError id="create-age-error" message={fieldErrors.age} />
+                  </div>
+                  <div className="space-y-2">
+                    <GroupLabel htmlFor="create-gender">Gender</GroupLabel>
+                    <select
+                      id="create-gender"
+                      value={form.gender}
+                      onChange={(e) => {
+                        setForm((p) => ({ ...p, gender: e.target.value }));
+                        clearFieldError('gender');
+                      }}
+                      className="w-full h-12 rounded bg-surface px-3 text-body text-ink border-2 border-ink/15 hover:border-ink/30 transition-colors duration-micro focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                      aria-invalid={Boolean(fieldErrors.gender)}
+                      aria-describedby={fieldErrors.gender ? 'create-gender-error' : undefined}
                     >
-                      + {allergy}
-                    </button>
-                  ))}
+                      <option value="">Prefer not to say</option>
+                      <option value="male">Male</option>
+                      <option value="female">Female</option>
+                      <option value="other">Other</option>
+                    </select>
+                    <FieldError id="create-gender-error" message={fieldErrors.gender} />
+                  </div>
                 </div>
-                <Input
-                  placeholder="Type allergen and press Enter"
-                  value={allergyInput}
-                  onChange={(e) => setAllergyInput(e.target.value)}
-                  onKeyDown={handleAllergyKeyDown}
-                />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm text-text-muted">Conditions</label>
-                <div className="flex flex-wrap gap-2">
-                  {conditionOptions.map((condition) => (
-                    <button
-                      key={condition}
-                      onClick={() => toggleCondition(condition)}
-                      className={`px-3 py-1.5 rounded-full text-sm transition-colors ${
-                        form.conditions.includes(condition) ? 'bg-warning text-black' : 'bg-surface text-text-muted hover:text-text-primary'
-                      }`}
-                    >
-                      {condition}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="flex gap-3">
-                <Button variant="outline" onClick={() => setStep(1)} className="flex-1">
-                  <ArrowLeft className="h-4 w-4 mr-2" /> Back
+                <Button
+                  // Not disabled: a dead button explains nothing. Pressing it
+                  // with no name says what is missing, under the name field.
+                  onClick={() => {
+                    if (!form.name.trim()) {
+                      setFieldErrors((prev) => ({ ...prev, name: 'Enter a name to continue.' }));
+                      return;
+                    }
+                    goToStep(2);
+                  }}
+                  className="w-full"
+                >
+                  Next: food and health <ArrowRight className="h-4 w-4" aria-hidden="true" />
                 </Button>
-                <Button onClick={() => setStep(3)} className="flex-1">
-                  Next <ArrowRight className="h-4 w-4 ml-2" />
-                </Button>
-              </div>
-            </motion.div>
-          )}
+              </motion.div>
+            )}
 
-          {step === 3 && (
-            <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} className="space-y-6">
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <label className="text-sm text-text-muted">Medications</label>
-                  <Button variant="ghost" size="sm" onClick={addMedication}>
-                    <Plus className="h-4 w-4 mr-1" /> Add
+            {step === 2 && (
+              <motion.div
+                key="step-2"
+                variants={stepVariants}
+                initial="hidden"
+                animate="visible"
+                exit="exit"
+                transition={transition()}
+                className="space-y-6"
+              >
+                <div className="space-y-2">
+                  <GroupLabel>How you eat</GroupLabel>
+                  <div className="flex flex-wrap gap-2">
+                    {dietOptions.map((diet) => (
+                      <Chip
+                        key={diet}
+                        selected={form.dietType === diet}
+                        onClick={() => setForm((p) => ({ ...p, dietType: diet }))}
+                      >
+                        {diet}
+                      </Chip>
+                    ))}
+                  </div>
+                  <FieldError id="create-diet-error" message={fieldErrors.dietType} />
+                </div>
+                <div className="space-y-2">
+                  <GroupLabel htmlFor="create-allergies">Allergies</GroupLabel>
+                  <p className="text-caption text-ink-muted">
+                    Add anything you have to avoid. We check every label against this list first.
+                  </p>
+                  {form.allergies.length > 0 && (
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      {form.allergies.map((allergy) => (
+                        <span
+                          key={allergy}
+                          className="inline-flex items-center gap-1.5 pl-3 pr-1 min-h-[44px] rounded-full text-body bg-danger-soft text-danger-ink border-2 border-danger/25"
+                        >
+                          {allergy}
+                          <button
+                            type="button"
+                            onClick={() => removeAllergy(allergy)}
+                            className="flex h-9 w-9 items-center justify-center rounded-full hover:bg-danger/15 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                            aria-label={`Remove ${allergy}`}
+                          >
+                            <X className="h-4 w-4" aria-hidden="true" />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {presetAllergies.filter((a) => !form.allergies.includes(a)).map((allergy) => (
+                      <button
+                        key={allergy}
+                        type="button"
+                        onClick={() => addAllergy(allergy)}
+                        className={`${chipBase} bg-transparent text-ink-muted hover:text-ink border-2 border-line-strong/50 hover:border-ink/30`}
+                      >
+                        <Plus className="h-3.5 w-3.5 mr-1.5" aria-hidden="true" />
+                        {allergy}
+                      </button>
+                    ))}
+                  </div>
+                  <Input
+                    id="create-allergies"
+                    placeholder="Something else? Type it and press enter"
+                    value={allergyInput}
+                    onChange={(e) => setAllergyInput(e.target.value)}
+                    onKeyDown={handleAllergyKeyDown}
+                    invalid={Boolean(fieldErrors.allergies)}
+                    aria-invalid={Boolean(fieldErrors.allergies)}
+                    aria-describedby={fieldErrors.allergies ? 'create-allergies-error' : undefined}
+                  />
+                  <FieldError id="create-allergies-error" message={fieldErrors.allergies} />
+                </div>
+                <div className="space-y-2">
+                  <GroupLabel>Anything you are managing</GroupLabel>
+                  <div className="flex flex-wrap gap-2">
+                    {conditionOptions.map((condition) => (
+                      <Chip
+                        key={condition}
+                        selected={form.conditions.includes(condition)}
+                        onClick={() => toggleCondition(condition)}
+                      >
+                        {condition}
+                      </Chip>
+                    ))}
+                  </div>
+                  <FieldError id="create-conditions-error" message={fieldErrors.conditions} />
+                </div>
+                <div className="flex gap-3">
+                  <Button variant="secondary" onClick={() => goToStep(1)} className="flex-1">
+                    <ArrowLeft className="h-4 w-4" aria-hidden="true" /> Back
+                  </Button>
+                  <Button onClick={() => goToStep(3)} className="flex-1">
+                    Next <ArrowRight className="h-4 w-4" aria-hidden="true" />
                   </Button>
                 </div>
-                {form.medications.map((med, i) => (
-                  <div key={i} className="flex gap-2">
-                    <Input placeholder="Medicine name" value={med.name} onChange={(e) => updateMedication(i, 'name', e.target.value)} />
-                    <Input placeholder="Dosage" value={med.dosage} onChange={(e) => updateMedication(i, 'dosage', e.target.value)} />
-                    <Button variant="ghost" size="icon" onClick={() => removeMedication(i)}>
-                      <X className="h-4 w-4 text-danger" />
+              </motion.div>
+            )}
+
+            {step === 3 && (
+              <motion.div
+                key="step-3"
+                variants={stepVariants}
+                initial="hidden"
+                animate="visible"
+                exit="exit"
+                transition={transition()}
+                className="space-y-6"
+              >
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <GroupLabel>Medicines you take</GroupLabel>
+                    <Button variant="ghost" size="sm" onClick={addMedication}>
+                      <Plus className="h-4 w-4" aria-hidden="true" /> Add one
                     </Button>
                   </div>
-                ))}
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm text-text-muted">Fitness Goal</label>
-                <div className="flex flex-wrap gap-2">
-                  {fitnessOptions.map((goal) => (
-                    <button
-                      key={goal}
-                      onClick={() => setForm((p) => ({ ...p, fitnessGoal: goal }))}
-                      className={`px-3 py-1.5 rounded-full text-sm transition-colors ${
-                        form.fitnessGoal === goal ? 'bg-secondary text-white' : 'bg-surface text-text-muted hover:text-text-primary'
-                      }`}
-                    >
-                      {goal}
-                    </button>
+                  <p className="text-caption text-ink-muted">
+                    We use these to flag foods and supplements that do not sit well with them.
+                  </p>
+                  {form.medications.map((med, i) => (
+                    <div key={i} className="flex gap-2">
+                      <Input
+                        placeholder="Medicine name"
+                        aria-label={`Medicine ${i + 1} name`}
+                        value={med.name}
+                        onChange={(e) => updateMedication(i, 'name', e.target.value)}
+                      />
+                      <Input
+                        placeholder="Dosage"
+                        aria-label={`Medicine ${i + 1} dosage`}
+                        value={med.dosage}
+                        onChange={(e) => updateMedication(i, 'dosage', e.target.value)}
+                      />
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => removeMedication(i)}
+                        aria-label={`Remove medicine ${i + 1}`}
+                      >
+                        <X className="h-4 w-4 text-danger" aria-hidden="true" />
+                      </Button>
+                    </div>
                   ))}
+                  <FieldError id="create-medications-error" message={fieldErrors.medications} />
                 </div>
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm text-text-muted">Activity Level</label>
-                <div className="flex flex-wrap gap-2">
-                  {activityOptions.map((level) => (
-                    <button
-                      key={level}
-                      onClick={() => setForm((p) => ({ ...p, activityLevel: level }))}
-                      className={`px-3 py-1.5 rounded-full text-sm transition-colors ${
-                        form.activityLevel === level ? 'bg-primary text-white' : 'bg-surface text-text-muted hover:text-text-primary'
-                      }`}
-                    >
-                      {level}
-                    </button>
-                  ))}
+                <div className="space-y-2">
+                  <GroupLabel>What you are working towards</GroupLabel>
+                  <div className="flex flex-wrap gap-2">
+                    {fitnessOptions.map((goal) => (
+                      <Chip
+                        key={goal}
+                        selected={form.fitnessGoal === goal}
+                        onClick={() => setForm((p) => ({ ...p, fitnessGoal: goal }))}
+                      >
+                        {goal.replace('-', ' ')}
+                      </Chip>
+                    ))}
+                  </div>
+                  <FieldError id="create-fitness-error" message={fieldErrors.fitnessGoal} />
                 </div>
-              </div>
-              <div className="flex gap-3">
-                <Button variant="outline" onClick={() => setStep(2)} className="flex-1">
-                  <ArrowLeft className="h-4 w-4 mr-2" /> Back
-                </Button>
-                <Button onClick={handleSave} className="flex-1">
-                  <Check className="h-4 w-4 mr-2" /> Save Profile
-                </Button>
-              </div>
-            </motion.div>
-          )}
+                <div className="space-y-2">
+                  <GroupLabel>How your days usually go</GroupLabel>
+                  <div className="flex flex-wrap gap-2">
+                    {activityOptions.map((level) => (
+                      <Chip
+                        key={level}
+                        selected={form.activityLevel === level}
+                        onClick={() => setForm((p) => ({ ...p, activityLevel: level }))}
+                      >
+                        {level.replace('-', ' ')}
+                      </Chip>
+                    ))}
+                  </div>
+                  <FieldError id="create-activity-error" message={fieldErrors.activityLevel} />
+                </div>
+
+                {consentNeeded && (
+                  <div className="rounded-md border border-line-strong/40 bg-sunk/50 p-4 space-y-3">
+                    <h3 className="text-heading text-ink">
+                      Before we save this profile
+                    </h3>
+                    <p className="text-body text-ink-muted">
+                      A profile holds health information — allergies, conditions and medications —
+                      and VitalAI sends it to an AI model to work out what is safe for this person
+                      to eat. It is stored encrypted, it is never sold, and you can export or
+                      delete all of it at any time from settings.
+                    </p>
+                    <label className="flex items-start gap-3 cursor-pointer min-h-[44px]">
+                      <input
+                        type="checkbox"
+                        checked={agreedToHealthProcessing}
+                        onChange={(e) => {
+                          setAgreedToHealthProcessing(e.target.checked);
+                          clearFieldError('consent');
+                        }}
+                        aria-invalid={fieldErrors.consent ? true : undefined}
+                        aria-describedby={fieldErrors.consent ? 'create-consent-error' : undefined}
+                        className="mt-0.5 h-5 w-5 flex-shrink-0 rounded border-line-strong bg-surface accent-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                      />
+                      <span className="text-body text-ink">
+                        I agree to VitalAI processing this health information to give personalised
+                        guidance.{' '}
+                        <Link
+                          to="/privacy"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="underline underline-offset-2 decoration-2 text-primary"
+                        >
+                          Read the privacy terms
+                        </Link>
+                        .
+                      </span>
+                    </label>
+                    <FieldError id="create-consent-error" message={fieldErrors.consent} />
+                  </div>
+                )}
+
+                {consentQuery.error && (
+                  <ErrorState
+                    error={describeError(consentQuery.error)}
+                    onRetry={() => void consentQuery.refetch()}
+                    retrying={consentQuery.isFetching}
+                  />
+                )}
+
+                {/* Form-level failures sit next to the button that caused them,
+                    and the retry resubmits the same answers. */}
+                {saveFailure && (
+                  <ErrorState error={saveFailure} onRetry={() => void handleSave()} retrying={saving} />
+                )}
+
+                <div className="flex gap-3">
+                  <Button variant="secondary" onClick={() => goToStep(2)} className="flex-1" disabled={saving}>
+                    <ArrowLeft className="h-4 w-4" aria-hidden="true" /> Back
+                  </Button>
+                  <Button
+                    onClick={() => void handleSave()}
+                    className="flex-1"
+                    loading={saving}
+                    loadingLabel="Saving…"
+                  >
+                    <Check className="h-4 w-4" aria-hidden="true" /> Save profile
+                  </Button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </DialogContent>
       </Dialog>
     </div>

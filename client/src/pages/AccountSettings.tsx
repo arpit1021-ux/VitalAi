@@ -1,24 +1,21 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { AlertTriangle, ArrowLeft, Check, Download, LogOut, Loader2 } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Check, Download, LogOut } from 'lucide-react';
 import { account } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { Field, fieldAria } from '@/components/ui/field';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { ErrorState } from '@/components/shared/ErrorState';
+import { describeError, type DescribedError } from '@/lib/errors';
 
 interface ConsentState {
   currentVersion: string;
   accepted: { version: string; healthDataAcceptedAt: string } | null;
   upToDate: boolean;
-}
-
-function describeError(error: unknown): string {
-  const response = (error as { response?: { data?: { error?: string; action?: string } } }).response;
-  const message = response?.data?.error ?? 'Something went wrong.';
-  const action = response?.data?.action;
-  return action ? `${message} ${action}` : message;
 }
 
 /**
@@ -30,9 +27,11 @@ export default function AccountSettings() {
   const logoutEverywhere = useAuthStore((state) => state.logoutEverywhere);
 
   const [confirmEmail, setConfirmEmail] = useState('');
-  const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [exportError, setExportError] = useState<string | null>(null);
+  const [confirmFieldError, setConfirmFieldError] = useState<string | undefined>(undefined);
+  const [deleteError, setDeleteError] = useState<DescribedError | null>(null);
+  const [exportError, setExportError] = useState<DescribedError | null>(null);
   const [exportedAt, setExportedAt] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const consent = useQuery<ConsentState>({
     queryKey: ['consent'],
@@ -80,177 +79,273 @@ export default function AccountSettings() {
   const emailMatches =
     Boolean(user?.email) && confirmEmail.trim().toLowerCase() === user?.email.toLowerCase();
 
+  /**
+   * Deleting an account is destructive, immediate and irreversible, so it is
+   * one of the few places a modal is warranted: the confirmation has to be the
+   * only thing on screen, and it has to carry the action button itself.
+   */
+  const openDeleteConfirmation = () => {
+    if (!emailMatches) {
+      // Said under the field rather than by greying out the button, which
+      // would leave the reason unstated.
+      setConfirmFieldError(
+        confirmEmail.trim()
+          ? 'That does not match the email on this account.'
+          : 'Type your email address to confirm.',
+      );
+      return;
+    }
+    setConfirmFieldError(undefined);
+    setDeleteError(null);
+    setConfirmingDelete(true);
+  };
+
   return (
-    <main className="min-h-screen bg-background px-6 py-12">
+    <main className="min-h-screen bg-ground px-4 py-12 sm:px-6">
       <div className="mx-auto max-w-2xl">
         <Link
           to="/"
-          className="inline-flex items-center gap-2 text-sm text-text-muted hover:text-text-primary rounded focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+          className="inline-flex min-h-[44px] items-center gap-2 rounded text-label text-ink-muted transition-colors duration-micro hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
         >
           <ArrowLeft className="h-4 w-4" aria-hidden="true" />
           Back
         </Link>
 
-        <h1 className="mt-8 text-3xl font-medium text-text-primary">Account and data</h1>
-        <p className="mt-2 text-sm text-text-muted">{user?.email}</p>
+        <h1 className="mt-4 text-balance font-display text-display text-ink">Your account and data</h1>
+        <p className="mt-3 max-w-reading text-body-lg text-ink-muted">
+          Everything we hold about you, and every way to get it back or get rid of it.
+        </p>
+        <p className="mt-2 break-words font-mono text-figure text-ink-muted">{user?.email}</p>
 
         {/* Consent ------------------------------------------------------- */}
         <Card className="mt-10">
-          <CardContent className="p-6">
-            <h2 className="text-lg font-medium text-text-primary">Privacy terms</h2>
+          <CardContent className="p-5 pt-5">
+            <h2 className="text-heading text-ink">Privacy terms</h2>
 
             {consent.isLoading ? (
               <div className="mt-4 space-y-2" aria-hidden="true">
-                <div className="h-4 w-3/4 animate-pulse rounded bg-border" />
-                <div className="h-4 w-1/2 animate-pulse rounded bg-border" />
+                <div className="h-4 w-3/4 animate-pulse rounded-sm bg-sunk" />
+                <div className="h-4 w-1/2 animate-pulse rounded-sm bg-sunk" />
               </div>
             ) : consent.isError ? (
               <div className="mt-4">
-                <p className="text-sm text-danger">
-                  Couldn&apos;t load your consent status. {describeError(consent.error)}
-                </p>
-                <Button variant="outline" className="mt-3" onClick={() => consent.refetch()}>
-                  Try again
-                </Button>
+                <ErrorState
+                  error={describeError(consent.error)}
+                  onRetry={() => void consent.refetch()}
+                  retrying={consent.isFetching}
+                />
               </div>
             ) : consent.data?.upToDate ? (
-              <p className="mt-3 flex items-start gap-2 text-sm text-text-muted">
+              <p className="mt-3 flex items-start gap-2 text-body text-ink-muted">
                 <Check className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
                 <span>
                   You accepted version {consent.data.accepted?.version} on{' '}
                   {consent.data.accepted
                     ? new Date(consent.data.accepted.healthDataAcceptedAt).toLocaleDateString()
                     : 'an earlier date'}
-                  . <Link to="/privacy" className="underline underline-offset-4">Read the notice</Link>
+                  .{' '}
+                  <Link
+                    to="/privacy"
+                    className="rounded text-primary underline underline-offset-4 decoration-2 hover:text-primary-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                  >
+                    Read the notice
+                  </Link>
                 </span>
               </p>
             ) : (
               <div className="mt-3">
-                <p className="text-sm text-text-muted">
+                <p className="max-w-reading text-body text-ink-muted">
                   The privacy notice has been updated to version {consent.data?.currentVersion}.{' '}
-                  <Link to="/privacy" className="underline underline-offset-4">
+                  <Link
+                    to="/privacy"
+                    className="rounded text-primary underline underline-offset-4 decoration-2 hover:text-primary-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                  >
                     Read what changed
                   </Link>
-                  , then accept to continue using health features.
+                  , then accept to keep using the health features.
                 </p>
                 <Button
-                  className="mt-4"
-                  disabled={acceptConsent.isPending || !consent.data}
+                  className="mt-4 w-full sm:w-auto"
+                  loading={acceptConsent.isPending}
+                  loadingLabel="Saving…"
+                  disabled={!consent.data}
                   onClick={() => consent.data && acceptConsent.mutate(consent.data.currentVersion)}
                 >
-                  {acceptConsent.isPending ? 'Saving…' : 'Accept current terms'}
+                  Accept the current terms
                 </Button>
-                {acceptConsent.isError ? (
-                  <p className="mt-2 text-sm text-danger">{describeError(acceptConsent.error)}</p>
+                {acceptConsent.isError && consent.data ? (
+                  <div className="mt-3">
+                    <ErrorState
+                      error={describeError(acceptConsent.error)}
+                      onRetry={() => acceptConsent.mutate(consent.data.currentVersion)}
+                      retrying={acceptConsent.isPending}
+                    />
+                  </div>
                 ) : null}
               </div>
             )}
           </CardContent>
         </Card>
 
-        {/* Export -------------------------------------------------------- */}
-        <Card className="mt-6">
-          <CardContent className="p-6">
-            <h2 className="text-lg font-medium text-text-primary">Download your data</h2>
-            <p className="mt-2 text-sm text-text-muted">
-              A JSON file containing every profile, scan, conversation and log we hold. Health
-              fields are decrypted, so the file is readable — and worth storing somewhere you trust.
+        {/* Export and sessions -------------------------------------------
+            A ruled list rather than two more cards: these are things you do,
+            not objects you hold, and a page of stacked cards has texture
+            where it needs rhythm. */}
+        <section className="mt-10 border-t border-line">
+          <div className="border-b border-line py-6">
+            <h2 className="text-heading text-ink">Download your data</h2>
+            <p className="mt-2 max-w-reading text-body text-ink-muted">
+              A JSON file with every profile, scan, conversation and log we hold. Health fields come
+              out decrypted, so the file is readable — and worth keeping somewhere you trust.
             </p>
 
             <Button
-              variant="outline"
-              className="mt-4"
-              disabled={exportData.isPending}
+              variant="secondary"
+              className="mt-4 w-full sm:w-auto"
+              loading={exportData.isPending}
+              loadingLabel="Putting your file together…"
               onClick={() => exportData.mutate()}
             >
-              {exportData.isPending ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
-                  Preparing your file…
-                </>
-              ) : (
-                <>
-                  <Download className="mr-2 h-4 w-4" aria-hidden="true" />
-                  Download my data
-                </>
-              )}
+              <Download className="h-4 w-4" aria-hidden="true" />
+              Download my data
             </Button>
 
-            {exportError ? <p className="mt-3 text-sm text-danger">{exportError}</p> : null}
-            {exportedAt && !exportError ? (
-              <p className="mt-3 text-sm text-text-muted">Downloaded {exportedAt}.</p>
+            {exportError ? (
+              <div className="mt-3">
+                <ErrorState
+                  error={exportError}
+                  onRetry={() => exportData.mutate()}
+                  retrying={exportData.isPending}
+                />
+              </div>
             ) : null}
-          </CardContent>
-        </Card>
+            {exportedAt && !exportError ? (
+              <p className="mt-3 text-caption text-ink-muted" role="status">
+                Downloaded {exportedAt}.
+              </p>
+            ) : null}
+          </div>
 
-        {/* Sessions ------------------------------------------------------ */}
-        <Card className="mt-6">
-          <CardContent className="p-6">
-            <h2 className="text-lg font-medium text-text-primary">Sessions</h2>
-            <p className="mt-2 text-sm text-text-muted">
-              Signs you out on every device, including this one. Use this if you think someone else
-              has access to your account.
+          <div className="border-b border-line py-6">
+            <h2 className="text-heading text-ink">Sessions</h2>
+            <p className="mt-2 max-w-reading text-body text-ink-muted">
+              Signs you out on every device, this one included. Use it if you think someone else has
+              got into your account.
             </p>
-            <Button variant="outline" className="mt-4" onClick={() => void logoutEverywhere()}>
-              <LogOut className="mr-2 h-4 w-4" aria-hidden="true" />
+            <Button
+              variant="secondary"
+              className="mt-4 w-full sm:w-auto"
+              onClick={() => void logoutEverywhere()}
+            >
+              <LogOut className="h-4 w-4" aria-hidden="true" />
               Sign out everywhere
             </Button>
-          </CardContent>
-        </Card>
+          </div>
+        </section>
 
         {/* Deletion ------------------------------------------------------ */}
-        <Card className="mt-6 border-danger/40">
-          <CardContent className="p-6">
-            <h2 className="flex items-center gap-2 text-lg font-medium text-text-primary">
-              <AlertTriangle className="h-5 w-5 text-danger" aria-hidden="true" />
-              Delete your account
-            </h2>
-            <p className="mt-2 text-sm text-text-muted">
-              Removes every profile, scan, conversation, log and stored photo. This happens
-              immediately, cannot be undone, and there is no backup we can restore from.
-            </p>
+        <section className="mt-10 rounded-md border-2 border-danger/30 bg-danger-soft/40 p-5">
+          <h2 className="flex items-start gap-2 text-heading text-ink">
+            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-danger" aria-hidden="true" />
+            Delete your account
+          </h2>
+          <p className="mt-2 max-w-reading text-body text-ink-muted">
+            Removes every profile, scan, conversation, log and stored photo. It happens
+            immediately, it can&apos;t be undone, and there&apos;s no backup we can restore from.
+          </p>
 
-            <label htmlFor="confirm-email" className="mt-5 block text-sm text-text-primary">
-              Type <span className="font-medium">{user?.email}</span> to confirm
-            </label>
+          <Field
+            htmlFor="confirm-email"
+            label="Confirm your email address"
+            hint={`Type ${user?.email ?? 'the email on this account'} to confirm.`}
+            error={confirmFieldError}
+            required
+            className="mt-5"
+          >
             <Input
-              id="confirm-email"
+              {...fieldAria('confirm-email', {
+                hint: `Type ${user?.email ?? 'the email on this account'} to confirm.`,
+                error: confirmFieldError,
+              })}
               type="email"
               autoComplete="off"
               value={confirmEmail}
               onChange={(event) => {
                 setConfirmEmail(event.target.value);
+                setConfirmFieldError(undefined);
                 setDeleteError(null);
               }}
-              aria-describedby={deleteError ? 'delete-error' : undefined}
-              aria-invalid={Boolean(deleteError)}
-              className="mt-2"
+              invalid={Boolean(confirmFieldError)}
             />
+          </Field>
 
-            {deleteError ? (
-              <p id="delete-error" role="alert" className="mt-2 text-sm text-danger">
-                {deleteError}
-              </p>
-            ) : null}
+          <Button
+            variant="danger"
+            className="mt-4 w-full sm:w-auto"
+            // Deliberately not disabled: pressing it with the wrong email
+            // says so under the field, which a greyed-out button cannot.
+            onClick={openDeleteConfirmation}
+          >
+            Delete my account permanently
+          </Button>
+        </section>
+      </div>
 
+      {/* The last stop before an irreversible deletion. */}
+      <Dialog
+        open={confirmingDelete}
+        onOpenChange={(open) => {
+          if (deleteAccount.isPending) return;
+          if (!open) setConfirmingDelete(false);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="font-display text-title">
+              Delete your account and everything in it?
+            </DialogTitle>
+          </DialogHeader>
+
+          <p className="text-body text-ink-muted">
+            This permanently deletes the account for{' '}
+            <span className="break-words font-mono text-figure text-ink">{user?.email}</span> and
+            everything held under it: every health profile, every food, medicine and supplement
+            scan, every conversation with VitalBot, every daily log and every stored photo.
+          </p>
+          <p className="text-body text-ink-muted">
+            It happens immediately, it can&apos;t be undone, and there&apos;s no backup we can
+            restore from. If you want a copy first, close this and download your data.
+          </p>
+
+          {deleteError ? (
+            <ErrorState
+              error={deleteError}
+              onRetry={() => deleteAccount.mutate()}
+              retrying={deleteAccount.isPending}
+            />
+          ) : null}
+
+          <div className="mt-2 flex flex-col gap-3 sm:flex-row">
             <Button
-              variant="destructive"
-              className="mt-4"
-              disabled={!emailMatches || deleteAccount.isPending}
+              variant="secondary"
+              className="flex-1"
+              disabled={deleteAccount.isPending}
+              onClick={() => setConfirmingDelete(false)}
+            >
+              Keep my account
+            </Button>
+            <Button
+              variant="danger"
+              className="flex-1"
+              loading={deleteAccount.isPending}
+              loadingLabel="Deleting everything…"
               onClick={() => deleteAccount.mutate()}
             >
-              {deleteAccount.isPending ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
-                  Deleting everything…
-                </>
-              ) : (
-                'Delete my account permanently'
-              )}
+              Delete everything
             </Button>
-          </CardContent>
-        </Card>
-      </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </main>
   );
 }
