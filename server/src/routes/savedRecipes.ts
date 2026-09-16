@@ -66,36 +66,31 @@ router.get('/:profileId', validate({ params: z.object({ profileId: objectId }), 
   res.json({ recipes });
 }));
 
-router.post('/', async (req: Request, res: Response) => {
-  try {
-    const data = createRecipeSchema.parse(req.body);
+// Validated by the middleware: a ZodError caught here lost the field it
+// belonged to, and the same catch swallowed AppError — the "already saved"
+// conflict came back as a generic 500.
+router.post('/', validate({ body: createRecipeSchema }), asyncHandler(async (req: Request, res: Response) => {
+  const data = req.body as z.infer<typeof createRecipeSchema>;
 
-    const profile = await Profile.findOne({
-      _id: data.profileId,
-      userId: req.jwtUser!.id,
-    });
-    if (!profile) {
-      throw notFound('That profile');
-    }
-
-    const existing = await SavedRecipe.findOne({
-      profileId: data.profileId,
-      name: data.name,
-    });
-    if (existing) {
-      throw conflict('That recipe is already saved.', 'Open it from your saved recipes.');
-    }
-
-    const recipe = await SavedRecipe.create(data);
-    res.status(201).json({ recipe });
-  } catch (error) {
-    if (error instanceof z.ZodError) {
-      res.status(400).json({ error: error.errors[0].message });
-      return;
-    }
-    res.status(500).json({ error: 'Failed to save recipe' });
+  const profile = await Profile.findOne({
+    _id: data.profileId,
+    userId: req.jwtUser!.id,
+  });
+  if (!profile) {
+    throw notFound('That profile');
   }
-});
+
+  const existing = await SavedRecipe.findOne({
+    profileId: data.profileId,
+    name: data.name,
+  });
+  if (existing) {
+    throw conflict('That recipe is already saved.', 'Open it from your saved recipes.');
+  }
+
+  const recipe = await SavedRecipe.create(data);
+  res.status(201).json({ recipe });
+}));
 
 router.delete('/:id', validate({ params: z.object({ id: objectId }) }), asyncHandler(async (req: Request, res: Response) => {
   const recipe = await SavedRecipe.findById(req.params.id);

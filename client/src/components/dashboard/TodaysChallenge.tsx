@@ -1,8 +1,8 @@
 import { motion, AnimatePresence } from 'framer-motion';
-import { CheckCircle, Sparkles } from 'lucide-react';
-import { Card, CardContent } from '@/components/ui/card';
+import { Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { transition, durations } from '@/lib/motion';
 
 interface TodaysChallengeProps {
   text: string;
@@ -14,55 +14,68 @@ interface TodaysChallengeProps {
 export default function TodaysChallenge({ text, completed, onComplete, loading }: TodaysChallengeProps) {
   if (loading) {
     return (
-      <Card>
-        <CardContent className="p-6">
-          <Skeleton className="h-4 w-48 mb-3" />
-          <Skeleton className="h-3 w-full mb-2" />
-          <Skeleton className="h-9 w-32 rounded-lg" />
-        </CardContent>
-      </Card>
+      <section className="rounded-xl bg-surface shadow-card p-6">
+        <Skeleton className="h-5 w-28 rounded" />
+        <Skeleton className="h-6 w-full rounded mt-4" />
+        <Skeleton className="h-6 w-2/3 rounded mt-2" />
+        <Skeleton className="h-12 w-40 rounded mt-6" />
+      </section>
     );
   }
 
+  /**
+   * The done state earns the colour: plain white while there is still
+   * something to do, a filled green card once it is done, so the two are
+   * different objects rather than the same card with a different sentence.
+   */
   return (
-    <Card className="border-indigo-500/20">
-      <CardContent className="p-6">
-        <div className="flex items-center gap-2 mb-3">
-          <Sparkles className="h-4 w-4 text-indigo-400" />
-          <p className="text-sm font-medium text-indigo-400">Today's Challenge</p>
-        </div>
+    <section
+      className={`rounded-xl p-6 transition-colors duration-enter ease-entrance ${
+        completed ? 'bg-primary-soft border-2 border-primary/30 shadow-card' : 'bg-surface shadow-card'
+      }`}
+      aria-labelledby="nudge-heading"
+    >
+      <h3 id="nudge-heading" className={`text-label ${completed ? 'text-primary-ink' : 'text-ink-faint'}`}>
+        One small thing
+      </h3>
 
-        <AnimatePresence mode="wait">
-          {completed ? (
-            <motion.div
-              key="completed"
-              initial={{ scale: 0.8, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              className="flex items-center gap-3"
+      <AnimatePresence mode="wait" initial={false}>
+        {completed ? (
+          <motion.div
+            key="completed"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={transition(durations.enter)}
+            className="mt-4 flex items-start gap-4"
+          >
+            <span
+              className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-full bg-primary shadow-button"
+              aria-hidden="true"
             >
-              <motion.div
-                initial={{ scale: 0 }}
-                animate={{ scale: [0, 1.3, 1] }}
-                transition={{ duration: 0.5 }}
-              >
-                <CheckCircle className="h-10 w-10 text-secondary" />
-              </motion.div>
-              <div>
-                <p className="text-sm font-medium text-secondary">Completed!</p>
-                <p className="text-xs text-text-muted">Great job staying on track</p>
-              </div>
-            </motion.div>
-          ) : (
-            <motion.div key="pending" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-              <p className="text-sm text-text-primary mb-4">{text}</p>
-              <Button size="sm" onClick={onComplete}>
-                <CheckCircle className="h-4 w-4 mr-2" />
-                Mark as done
-              </Button>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </CardContent>
-    </Card>
+              <Check className="h-6 w-6 text-ink-inverse" strokeWidth={2.5} />
+            </span>
+            <div className="min-w-0">
+              <p className="font-display text-title text-primary-ink">Done.</p>
+              <p className="text-body text-ink-muted mt-1 break-words max-w-reading">{text}</p>
+            </div>
+          </motion.div>
+        ) : (
+          <motion.div
+            key="pending"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={transition(durations.enter)}
+          >
+            <p className="mt-2 font-display text-title text-ink max-w-reading break-words">{text}</p>
+            <Button size="lg" onClick={onComplete} className="mt-6 w-full sm:w-auto">
+              <Check className="h-5 w-5" aria-hidden="true" />
+              I did that
+            </Button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </section>
   );
 }

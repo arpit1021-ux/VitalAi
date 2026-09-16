@@ -1,23 +1,33 @@
 import * as React from 'react';
 import { cn } from '@/lib/utils';
 
-export type InputProps = React.InputHTMLAttributes<HTMLInputElement>;
+export interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
+  /** Draws the error treatment. The message itself belongs to `Field`. */
+  invalid?: boolean;
+}
 
-const Input = React.forwardRef<HTMLInputElement, InputProps>(
-  ({ className, type, ...props }, ref) => {
-    return (
-      <input
-        type={type}
-        className={cn(
-          'flex h-10 w-full rounded-xl border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:ring-2 focus:ring-primary/50 focus:border-primary disabled:cursor-not-allowed disabled:opacity-50',
-          className
-        )}
-        ref={ref}
-        {...props}
-      />
-    );
-  }
+/**
+ * A two-pixel edge at 15% ink. The edge of a control is meaningful non-text
+ * contrast under WCAG 1.4.11, and a hairline around an input on a warm ground
+ * is decoration pretending to be a boundary — you cannot see where to type.
+ */
+export const Input = React.forwardRef<HTMLInputElement, InputProps>(
+  ({ className, invalid, ...props }, ref) => (
+    <input
+      ref={ref}
+      aria-invalid={invalid || props['aria-invalid']}
+      className={cn(
+        'w-full h-12 rounded bg-surface px-3.5 text-body text-ink',
+        'border-2 transition-[border-color,background-color] duration-micro ease-entrance',
+        'placeholder:text-ink-faint',
+        'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
+        'disabled:bg-sunk disabled:text-ink-faint disabled:cursor-not-allowed',
+        'read-only:bg-sunk read-only:text-ink-muted',
+        invalid ? 'border-danger bg-danger-soft/50' : 'border-ink/15 hover:border-ink/30',
+        className,
+      )}
+      {...props}
+    />
+  ),
 );
 Input.displayName = 'Input';
-
-export { Input };

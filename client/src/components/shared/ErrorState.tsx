@@ -30,25 +30,25 @@ export function ErrorState({ error, onRetry, retrying = false, variant = 'sectio
       className={
         variant === 'page'
           ? 'flex flex-col items-center justify-center text-center py-20 px-4'
-          : 'flex flex-col items-start gap-3 rounded-xl border border-border bg-surface/60 p-5'
+          : 'flex flex-col items-start gap-3 rounded-md border border-line-strong/40 bg-surface p-5'
       }
     >
       <div className={variant === 'page' ? 'flex flex-col items-center gap-3' : 'flex items-start gap-3'}>
-        <Icon className="h-5 w-5 text-warning flex-shrink-0 mt-0.5" aria-hidden="true" />
+        <Icon className="h-5 w-5 text-ink-faint flex-shrink-0 mt-0.5" aria-hidden="true" />
         <div className={variant === 'page' ? 'text-center' : ''}>
-          <p className="text-sm font-medium text-text-primary">{error.title}</p>
-          <p className="text-sm text-text-muted mt-1 max-w-prose">{error.action}</p>
+          <p className="text-sm font-medium text-ink">{error.title}</p>
+          <p className="text-body text-ink-muted mt-1 max-w-prose">{error.action}</p>
         </div>
       </div>
 
       {error.requestId && (
-        <p className="text-xs text-text-muted font-mono tabular-nums">
+        <p className="text-xs text-ink-muted font-mono tabular-nums">
           Reference: {error.requestId}
         </p>
       )}
 
       {onRetry && error.retryable && (
-        <Button size="sm" variant="outline" onClick={onRetry} disabled={retrying} className="min-h-[44px] sm:min-h-0">
+        <Button size="sm" variant="secondary" onClick={onRetry} disabled={retrying} className="min-h-[44px] sm:min-h-0">
           <RefreshCw className={`h-4 w-4 mr-2 ${retrying ? 'animate-spin' : ''}`} aria-hidden="true" />
           {retrying ? 'Retrying…' : 'Try again'}
         </Button>

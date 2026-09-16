@@ -7,6 +7,18 @@ import { auth } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { ErrorState } from '@/components/shared/ErrorState';
+import { describeError, type DescribedError } from '@/lib/errors';
+
+/** A message shown under the input it concerns, never in a banner at the top. */
+function FieldError({ id, message }: { id: string; message?: string }) {
+  if (!message) return null;
+  return (
+    <p id={id} role="alert" className="text-caption text-danger">
+      {message}
+    </p>
+  );
+}
 
 export default function RegisterPage() {
   const navigate = useNavigate();
@@ -17,40 +29,67 @@ export default function RegisterPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [failure, setFailure] = useState<DescribedError | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
+  const clearFieldError = (field: string) =>
+    setFieldErrors((prev) => {
+      if (!prev[field]) return prev;
+      const next = { ...prev };
+      delete next[field];
+      return next;
+    });
 
-    if (!email.trim()) {
-      setError('Email is required');
+  const submit = async () => {
+    setFailure(null);
+
+    // Every one of these is about the contents of this form. None of them
+    // consults the server, so none of them can hint at who already has an
+    // account.
+    const missing: Record<string, string> = {};
+    if (!email.trim()) missing.email = 'Enter your email address.';
+    if (password.length < 6) missing.password = 'Use at least 6 characters.';
+    if (password !== confirmPassword) missing.confirmPassword = 'This does not match the password above.';
+    if (Object.keys(missing).length > 0) {
+      setFieldErrors(missing);
       return;
     }
-    if (password.length < 6) {
-      setError('Password must be at least 6 characters');
-      return;
-    }
-    if (password !== confirmPassword) {
-      setError('Passwords do not match');
-      return;
-    }
+    setFieldErrors({});
 
     setLoading(true);
     try {
       const res = await auth.register(email, password);
       setUser(res.data.user);
-      navigate('/profile-setup');
-    } catch (err: any) {
-      const msg = err.response?.data?.error || err.response?.data?.message || 'Registration failed. Please try again.';
-      setError(msg);
+      // Straight to the welcome screen rather than the profile wizard: a
+      // three-step health form is the second thing a new account sees, not the
+      // first. WelcomePage sends anyone who already has a profile on to `/`.
+      navigate('/welcome');
+    } catch (err) {
+      const described = describeError(err);
+      const fields = described.fields ?? {};
+
+      // The server decides what a rejected sign-up says. The client renders
+      // that copy unchanged and never adds a branch that would distinguish
+      // "this address is already registered" from any other rejection — that
+      // distinction is what lets an attacker enumerate accounts.
+      if (Object.keys(fields).length > 0) {
+        setFieldErrors(fields);
+      } else {
+        setFailure(described);
+      }
     } finally {
+      // Always cleared, so a failure never leaves the button spinning.
       setLoading(false);
     }
   };
 
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    void submit();
+  };
+
   return (
-    <div className="min-h-screen flex items-center justify-center p-4 bg-background">
+    <div className="min-h-screen flex items-center justify-center p-4 bg-ground">
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -59,28 +98,17 @@ export default function RegisterPage() {
       >
         <Card>
           <CardHeader className="text-center">
-            <div className="mx-auto h-12 w-12 rounded-xl bg-primary/20 flex items-center justify-center mb-4">
-              <Heart className="h-6 w-6 text-primary" aria-hidden="true" />
+            <div className="mx-auto h-12 w-12 rounded-full bg-primary-soft flex items-center justify-center mb-4">
+              <Heart className="h-6 w-6 text-primary-ink" aria-hidden="true" />
             </div>
-            <CardTitle className="text-2xl">Create Account</CardTitle>
-            <CardDescription>Start your health journey with VitalAI</CardDescription>
+            <CardTitle className="font-display text-title">Make an account</CardTitle>
+            <CardDescription>It takes a minute, and then we can get to know you.</CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-4" noValidate>
-              {error && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  className="p-3 rounded-lg bg-danger/10 border border-danger/20 text-danger text-sm"
-                  role="alert"
-                >
-                  {error}
-                </motion.div>
-              )}
-
               <a
                 href={auth.googleLogin()}
-                className="flex items-center justify-center gap-2 w-full h-10 rounded-xl border border-border text-sm text-text-primary hover:bg-surface transition-colors"
+                className="flex items-center justify-center gap-2 w-full h-12 rounded border-2 border-ink/15 shadow-button text-body font-semibold text-ink hover:border-ink/30 hover:bg-sunk/50 transition-colors duration-micro ease-entrance focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                 aria-label="Continue with Google"
               >
                 <svg className="h-4 w-4" viewBox="0 0 24 24" aria-hidden="true">
@@ -94,96 +122,121 @@ export default function RegisterPage() {
 
               <div className="relative my-4">
                 <div className="absolute inset-0 flex items-center">
-                  <div className="w-full border-t border-border" />
+                  <div className="w-full border-t border-line" />
                 </div>
-                <div className="relative flex justify-center text-xs uppercase">
-                  <span className="bg-card px-2 text-text-muted">OR</span>
+                <div className="relative flex justify-center">
+                  <span className="bg-surface px-2 text-caption text-ink-muted">or</span>
                 </div>
               </div>
 
               <div className="space-y-2">
-                <label htmlFor="reg-email" className="text-sm text-text-muted">Email</label>
+                <label htmlFor="reg-email" className="block text-label text-ink">Email</label>
                 <div className="relative">
-                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-text-muted" aria-hidden="true" />
+                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-ink-muted" aria-hidden="true" />
                   <Input
                     id="reg-email"
                     type="email"
                     placeholder="you@example.com"
                     value={email}
-                    onChange={(e) => setEmail(e.target.value)}
+                    onChange={(e) => {
+                      setEmail(e.target.value);
+                      clearFieldError('email');
+                    }}
                     className="pl-10"
                     required
                     autoComplete="email"
                     aria-required="true"
+                    aria-invalid={Boolean(fieldErrors.email)}
+                    aria-describedby={fieldErrors.email ? 'reg-email-error' : undefined}
                     disabled={loading}
                   />
                 </div>
+                <FieldError id="reg-email-error" message={fieldErrors.email} />
               </div>
               <div className="space-y-2">
-                <label htmlFor="reg-password" className="text-sm text-text-muted">Password</label>
+                <label htmlFor="reg-password" className="block text-label text-ink">Password</label>
                 <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-text-muted" aria-hidden="true" />
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-ink-muted" aria-hidden="true" />
                   <Input
                     id="reg-password"
                     type={showPassword ? 'text' : 'password'}
                     placeholder="••••••••"
                     value={password}
-                    onChange={(e) => setPassword(e.target.value)}
+                    onChange={(e) => {
+                      setPassword(e.target.value);
+                      clearFieldError('password');
+                    }}
                     className="pl-10 pr-10"
                     required
                     autoComplete="new-password"
                     aria-required="true"
+                    aria-invalid={Boolean(fieldErrors.password)}
+                    aria-describedby={fieldErrors.password ? 'reg-password-error' : undefined}
                     disabled={loading}
                   />
                   <button
                     type="button"
                     onClick={() => setShowPassword((prev) => !prev)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-primary transition-colors"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-ink-muted hover:text-ink transition-colors"
                     aria-label={showPassword ? 'Hide password' : 'Show password'}
                     tabIndex={-1}
                   >
                     {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                   </button>
                 </div>
+                <FieldError id="reg-password-error" message={fieldErrors.password} />
               </div>
               <div className="space-y-2">
-                <label htmlFor="reg-confirm" className="text-sm text-text-muted">Confirm Password</label>
+                <label htmlFor="reg-confirm" className="block text-label text-ink">Confirm password</label>
                 <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-text-muted" aria-hidden="true" />
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-ink-muted" aria-hidden="true" />
                   <Input
                     id="reg-confirm"
                     type={showConfirm ? 'text' : 'password'}
                     placeholder="••••••••"
                     value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    onChange={(e) => {
+                      setConfirmPassword(e.target.value);
+                      clearFieldError('confirmPassword');
+                    }}
                     className="pl-10 pr-10"
                     required
                     autoComplete="new-password"
                     aria-required="true"
+                    aria-invalid={Boolean(fieldErrors.confirmPassword)}
+                    aria-describedby={fieldErrors.confirmPassword ? 'reg-confirm-error' : undefined}
                     disabled={loading}
                   />
                   <button
                     type="button"
                     onClick={() => setShowConfirm((prev) => !prev)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-primary transition-colors"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-ink-muted hover:text-ink transition-colors"
                     aria-label={showConfirm ? 'Hide confirm password' : 'Show confirm password'}
                     tabIndex={-1}
                   >
                     {showConfirm ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                   </button>
                 </div>
+                <FieldError id="reg-confirm-error" message={fieldErrors.confirmPassword} />
               </div>
+
+              {/* Form-level failures sit next to the button that caused them,
+                  and the retry resubmits what is already typed. */}
+              {failure && (
+                <ErrorState error={failure} onRetry={() => void submit()} retrying={loading} />
+              )}
+
               <Button type="submit" className="w-full" disabled={loading}>
                 {loading ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin mr-2" aria-hidden="true" />
-                    Creating account...
+                    Creating your account…
                   </>
                 ) : (
-                  'Create Account'
+                  'Make my account'
                 )}
               </Button>
-              <p className="text-center text-sm text-text-muted">
+              <p className="text-center text-body text-ink-muted">
                 Already have an account?{' '}
                 <Link to="/login" className="text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 rounded">
                   Sign in

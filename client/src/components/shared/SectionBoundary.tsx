@@ -90,7 +90,7 @@ export function SectionBoundary<T>({
         <DelayedLoad>
           <div className="flex items-center gap-3 p-5" role="status" aria-live="polite">
             <Loader2 className="h-4 w-4 animate-spin text-primary" aria-hidden="true" />
-            <p className="text-sm text-text-muted">{loadingLabel ?? 'Working on it…'}</p>
+            <p className="text-body text-ink-muted">{loadingLabel ?? 'Working on it…'}</p>
           </div>
         </DelayedLoad>
       );
@@ -117,12 +117,12 @@ export function SectionBoundary<T>({
   return (
     <>
       {failure && degradeToStale && (
-        <p className="text-xs text-text-muted mb-2" role="status">
+        <p className="text-xs text-ink-muted mb-2" role="status">
           Showing the last version we loaded — refreshing failed.{' '}
           <button
             type="button"
             onClick={() => query.refetch()}
-            className="underline underline-offset-2 hover:text-text-primary"
+            className="underline underline-offset-2 hover:text-ink"
           >
             Try again
           </button>

@@ -1,7 +1,9 @@
 import { motion } from 'framer-motion';
-import { TrendingUp, CheckCircle, AlertTriangle, Activity } from 'lucide-react';
+import { Check, AlertTriangle, Activity } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { transition, durations } from '@/lib/motion';
+import { cn } from '@/lib/utils';
 
 interface HealthScoreCardProps {
   score: number | null;
@@ -19,11 +21,11 @@ interface HealthScoreCardProps {
 }
 
 const factorLabels: Record<string, string> = {
-  hydration: 'Hydration',
-  foodScanQuality: 'Food Quality',
+  hydration: 'Water',
+  foodScanQuality: 'What you ate',
   supplementQuality: 'Supplements',
-  dailyActivity: 'Daily Activity',
-  consistency: 'Consistency',
+  dailyActivity: 'Moving about',
+  consistency: 'Keeping it up',
 };
 
 const factorMaxes: Record<string, number> = {
@@ -34,6 +36,17 @@ const factorMaxes: Record<string, number> = {
   consistency: 10,
 };
 
+/**
+ * The score reads as a finding about someone's health, so it takes the verdict
+ * hues — and only two of them. A quiet week is something to look at, not
+ * something to avoid, so `danger` never appears here.
+ */
+function scoreTone(score: number) {
+  return score >= 70
+    ? { meter: 'bg-primary', ink: 'text-primary-ink', note: "You're in good shape" }
+    : { meter: 'bg-caution', ink: 'text-caution-ink', note: 'A few things worth a look' };
+}
+
 export default function HealthScoreCard({
   score,
   hasData = true,
@@ -42,12 +55,6 @@ export default function HealthScoreCard({
   improvements,
   loading,
 }: HealthScoreCardProps) {
-  const getScoreColor = (s: number) => {
-    if (s >= 80) return '#10B981';
-    if (s >= 50) return '#F59E0B';
-    return '#EF4444';
-  };
-
   if (loading) {
     return (
       <Card>
@@ -55,10 +62,8 @@ export default function HealthScoreCard({
           <Skeleton className="h-5 w-32" />
         </CardHeader>
         <CardContent>
-          <div className="flex justify-center mb-4">
-            <Skeleton className="h-32 w-32 rounded-full" />
-          </div>
-          <Skeleton className="h-4 w-24 mx-auto mb-4" />
+          <Skeleton className="mb-3 h-12 w-24" />
+          <Skeleton className="mb-5 h-2 w-full" />
           <div className="space-y-2">
             <Skeleton className="h-3 w-full" />
             <Skeleton className="h-3 w-3/4" />
@@ -73,120 +78,111 @@ export default function HealthScoreCard({
     return (
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <TrendingUp className="h-5 w-5 text-primary" />
-            Health Score
-          </CardTitle>
+          <CardTitle>Where you're at</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col items-center py-6">
-          <div className="h-20 w-20 rounded-full bg-surface flex items-center justify-center mb-4">
-            <Activity className="h-8 w-8 text-text-muted/40" />
-          </div>
-          <p className="text-sm text-text-muted text-center mb-1">Not enough data yet</p>
-          <p className="text-xs text-text-muted/70 text-center">Complete activities to generate your first score</p>
+          <span
+            aria-hidden="true"
+            className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-sunk"
+          >
+            <Activity className="h-7 w-7 text-ink-faint" />
+          </span>
+          <p className="text-body text-ink">Not enough to go on yet</p>
+          <p className="mt-1 max-w-reading text-center text-caption text-ink-muted">
+            Track a few days of water and meals and a score will show up here.
+          </p>
         </CardContent>
       </Card>
     );
   }
 
-  const circumference = 2 * Math.PI * 54;
-  const strokeDashoffset = circumference - (score / 100) * circumference;
-  const scoreColor = getScoreColor(score);
+  const tone = scoreTone(score);
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <TrendingUp className="h-5 w-5 text-primary" />
-          Health Score
-        </CardTitle>
+        <CardTitle>Where you're at</CardTitle>
       </CardHeader>
-      <CardContent>
-        <div className="flex justify-center mb-4">
-          <div className="relative">
-            <svg width="130" height="130" viewBox="0 0 120 120" className="transform -rotate-90">
-              <circle cx="60" cy="60" r="54" fill="none" stroke="#1F2937" strokeWidth="8" />
-              <motion.circle
-                cx="60"
-                cy="60"
-                r="54"
-                fill="none"
-                stroke={scoreColor}
-                strokeWidth="8"
-                strokeLinecap="round"
-                strokeDasharray={circumference}
-                initial={{ strokeDashoffset: circumference }}
-                animate={{ strokeDashoffset }}
-                transition={{ duration: 1.2, ease: 'easeOut' }}
-              />
-            </svg>
-            <div className="absolute inset-0 flex flex-col items-center justify-center">
-              <motion.span
-                initial={{ scale: 0 }}
-                animate={{ scale: 1 }}
-                transition={{ delay: 0.3, type: 'spring' }}
-                className="text-3xl font-bold"
-                style={{ color: scoreColor }}
-              >
-                {score}
-              </motion.span>
-              <span className="text-xs text-text-muted">/ 100</span>
-            </div>
+      <CardContent className="space-y-5">
+        <div>
+          <div className="flex items-baseline gap-2">
+            {/* The number is the point of this card, so it is set as a stat and
+                in a tabular face — it changes in place every day. */}
+            <span className={cn('font-mono text-stat tabular-nums', tone.ink)}>{score}</span>
+            <span className="text-body text-ink-muted">out of 100</span>
+          </div>
+          <p className="mt-1 text-body text-ink-muted">{tone.note}</p>
+          <div
+            className="mt-3 h-2 w-full overflow-hidden rounded-full bg-sunk"
+            role="progressbar"
+            aria-label="Your health score"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={score}
+          >
+            <motion.div
+              initial={{ width: 0 }}
+              animate={{ width: `${score}%` }}
+              transition={transition(durations.page)}
+              className={cn('h-full rounded-full', tone.meter)}
+            />
           </div>
         </div>
 
-        <div className="space-y-2 mb-4">
-          {Object.entries(factors).map(([key, value]) => (
-            <div key={key} className="flex items-center gap-2">
-              <span className="text-xs text-text-muted w-28 truncate">
-                {factorLabels[key] || key}
-              </span>
-              <div className="flex-1 h-1.5 bg-border rounded-full overflow-hidden">
-                <motion.div
-                  initial={{ width: 0 }}
-                  animate={{ width: `${(value / factorMaxes[key]) * 100}%` }}
-                  transition={{ duration: 0.8, ease: 'easeOut' }}
-                  className="h-full rounded-full"
-                  style={{ backgroundColor: getScoreColor((value / factorMaxes[key]) * 100) }}
-                />
-              </div>
-              <span className="text-xs text-text-muted w-8 text-right">{value}/{factorMaxes[key]}</span>
-            </div>
-          ))}
-        </div>
+        <ul className="space-y-2">
+          {Object.entries(factors).map(([key, value]) => {
+            const max = factorMaxes[key] ?? 100;
+            const pct = Math.round((value / max) * 100);
+            return (
+              <li key={key} className="flex items-center gap-3">
+                <span className="w-24 flex-shrink-0 truncate text-caption text-ink-muted sm:w-28">
+                  {factorLabels[key] || key}
+                </span>
+                <div
+                  className="h-1.5 flex-1 overflow-hidden rounded-full bg-sunk"
+                  role="progressbar"
+                  aria-label={factorLabels[key] || key}
+                  aria-valuemin={0}
+                  aria-valuemax={max}
+                  aria-valuenow={value}
+                >
+                  {/* Ink, not a hue: five coloured bars beside a scored number
+                      would read as five more verdicts. */}
+                  <motion.div
+                    initial={{ width: 0 }}
+                    animate={{ width: `${pct}%` }}
+                    transition={transition(durations.page)}
+                    className="h-full rounded-full bg-ink/45"
+                  />
+                </div>
+                <span className="w-12 flex-shrink-0 text-right font-mono text-caption tabular-nums text-ink-muted">
+                  {value}/{max}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
 
         {strengths.length > 0 && (
-          <div className="mb-3">
+          <ul className="space-y-1.5 border-t border-line pt-4">
             {strengths.map((s, i) => (
-              <motion.div
-                key={i}
-                initial={{ opacity: 0, x: -10 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: 0.5 + i * 0.1 }}
-                className="flex items-center gap-2 mb-1.5"
-              >
-                <CheckCircle className="h-3.5 w-3.5 text-secondary flex-shrink-0" />
-                <span className="text-xs text-text-primary">{s}</span>
-              </motion.div>
+              <li key={i} className="flex items-start gap-2">
+                <Check className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-primary" aria-hidden="true" />
+                <span className="text-body text-ink break-words">{s}</span>
+              </li>
             ))}
-          </div>
+          </ul>
         )}
 
         {improvements.length > 0 && (
-          <div>
+          <ul className="space-y-1.5 border-t border-line pt-4">
             {improvements.map((s, i) => (
-              <motion.div
-                key={i}
-                initial={{ opacity: 0, x: -10 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: 0.7 + i * 0.1 }}
-                className="flex items-center gap-2 mb-1.5"
-              >
-                <AlertTriangle className="h-3.5 w-3.5 text-warning flex-shrink-0" />
-                <span className="text-xs text-text-primary">{s}</span>
-              </motion.div>
+              <li key={i} className="flex items-start gap-2">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-caution" aria-hidden="true" />
+                <span className="text-body text-ink break-words">{s}</span>
+              </li>
             ))}
-          </div>
+          </ul>
         )}
       </CardContent>
     </Card>

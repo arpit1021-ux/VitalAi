@@ -109,51 +109,45 @@ router.get('/feed', validate({ query: feedQuerySchema }), asyncHandler(async (re
   res.json({ posts: enrichedPosts, total, page, totalPages: Math.ceil(total / limit) });
 }));
 
-router.post('/', async (req: Request, res: Response) => {
-  try {
-    const data = createPostSchema.parse(req.body);
+// Validated by the middleware: a ZodError caught here lost the field it
+// belonged to, and the same catch swallowed AppError into a generic 500.
+router.post('/', validate({ body: createPostSchema }), asyncHandler(async (req: Request, res: Response) => {
+  const data = req.body as z.infer<typeof createPostSchema>;
 
-    const profile = await Profile.findOne({
-      _id: data.profileId,
-      userId: req.jwtUser!.id,
-    });
-    if (!profile) {
-      throw notFound('That profile');
-    }
-
-    const moderation = await moderatePost(data.content, data.type, req.jwtUser!.id);
-
-    const post = await CommunityPost.create({
-      userId: req.jwtUser!.id,
-      profileId: data.profileId,
-      type: data.type,
-      title: data.title,
-      content: data.content,
-      condition: data.condition,
-      dietaryTags: data.dietaryTags,
-      status: moderation.approved ? 'published' : 'pending_review',
-      moderationNote: moderation.note,
-    });
-
-    res.status(201).json({
-      post: {
-        _id: post._id,
-        type: post.type,
-        title: post.title,
-        content: post.content,
-        status: post.status,
-        moderationNote: post.moderationNote,
-        createdAt: post.createdAt,
-      },
-    });
-  } catch (error) {
-    if (error instanceof z.ZodError) {
-      res.status(400).json({ error: error.errors[0].message });
-      return;
-    }
-    res.status(500).json({ error: 'Failed to create post' });
+  const profile = await Profile.findOne({
+    _id: data.profileId,
+    userId: req.jwtUser!.id,
+  });
+  if (!profile) {
+    throw notFound('That profile');
   }
-});
+
+  const moderation = await moderatePost(data.content, data.type, req.jwtUser!.id);
+
+  const post = await CommunityPost.create({
+    userId: req.jwtUser!.id,
+    profileId: data.profileId,
+    type: data.type,
+    title: data.title,
+    content: data.content,
+    condition: data.condition,
+    dietaryTags: data.dietaryTags,
+    status: moderation.approved ? 'published' : 'pending_review',
+    moderationNote: moderation.note,
+  });
+
+  res.status(201).json({
+    post: {
+      _id: post._id,
+      type: post.type,
+      title: post.title,
+      content: post.content,
+      status: post.status,
+      moderationNote: post.moderationNote,
+      createdAt: post.createdAt,
+    },
+  });
+}));
 
 router.post('/:id/like', validate({ params: z.object({ id: objectId }) }), asyncHandler(async (req: Request, res: Response) => {
   const post = await CommunityPost.findById(req.params.id);

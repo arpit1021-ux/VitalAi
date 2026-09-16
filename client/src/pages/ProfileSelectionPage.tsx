@@ -1,19 +1,32 @@
 import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Plus, Settings, LogOut } from 'lucide-react';
+import { Plus, Settings, LogOut, UserPlus } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { useProfileStore } from '@/stores/profileStore';
 import { Button } from '@/components/ui/button';
+import { rise, stagger, transition, durations } from '@/lib/motion';
 
-
-const avatarColors: Record<string, string> = {
-  '🍎': '#EF4444', '💪': '#10B981', '🧘': '#6366F1', '🏃‍♀️': '#F59E0B',
-  '🧠': '#8B5CF6', '❤️': '#EC4899', '🥗': '#22C55E', '💊': '#3B82F6',
-  '🩺': '#14B8A6', '🥦': '#84CC16', '🏋️': '#F97316', '🚴': '#06B6D4',
-  '🧑‍⚕️': '#0EA5E9', '🫀': '#DC2626', '🦷': '#A855F7', '🌙': '#6366F1',
-  '☀️': '#EAB308', '🫁': '#2DD4BF', '🦴': '#D1D5DB', '👁️': '#6366F1',
-};
+/**
+ * The avatar someone picked, on a recessed chip.
+ *
+ * This used to be a twenty-entry map of raw hex colours carried over from the
+ * old dark theme. The palette now has four hues and each one means something —
+ * primary is "safe", caution and danger are verdicts — so a decorative rainbow
+ * cannot survive: a teal or violet circle beside a green one reads as a
+ * judgement about the person. The chip is a neutral `sunk` well instead, and
+ * the avatar character itself does the distinguishing.
+ */
+function AvatarChip({ avatar, name }: { avatar?: string; name: string }) {
+  return (
+    <span
+      aria-hidden="true"
+      className="flex h-16 w-16 items-center justify-center rounded-full bg-sunk text-2xl leading-none text-ink transition-colors duration-micro group-hover:bg-primary-soft sm:h-20 sm:w-20 sm:text-3xl"
+    >
+      {avatar || name.trim().charAt(0).toUpperCase() || '?'}
+    </span>
+  );
+}
 
 export default function ProfileSelectionPage() {
   const navigate = useNavigate();
@@ -38,119 +51,125 @@ export default function ProfileSelectionPage() {
 
   if (profiles.length === 0) {
     return (
-      <div className="min-h-screen bg-background flex flex-col items-center justify-center p-4">
+      <div className="flex min-h-screen flex-col items-center justify-center bg-ground px-4 py-12">
         <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="text-center max-w-md"
+          variants={rise}
+          initial="hidden"
+          animate="visible"
+          transition={transition(durations.enter)}
+          className="w-full max-w-reading text-center"
         >
-          <div className="h-16 w-16 rounded-2xl bg-primary/20 flex items-center justify-center mx-auto mb-6">
-            <span className="text-3xl">👤</span>
-          </div>
-          <h1 className="text-3xl font-bold text-text-primary mb-2">No profiles yet</h1>
-          <p className="text-text-muted mb-8">Create your first profile to get started with personalized health tracking.</p>
-          <Button size="lg" onClick={() => navigate('/profile-setup')} className="h-12">
-            <Plus className="h-5 w-5 mr-2" /> Create Your First Profile
-          </Button>
-          <button
-            onClick={handleLogout}
-            className="mt-4 text-sm text-text-muted hover:text-text-primary transition-colors"
+          {/* Warmth is allowed here — an empty state is one of the few places
+              accent belongs, and there is no verdict anywhere near it. */}
+          <span
+            className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-accent-soft"
+            aria-hidden="true"
           >
-            Sign out
-          </button>
+            <UserPlus className="h-7 w-7 text-accent-ink" />
+          </span>
+          <h1 className="text-balance font-display text-display text-ink">Nobody here yet</h1>
+          <p className="mx-auto mt-3 max-w-reading text-body-lg text-ink-muted">
+            Make a profile and VitalAI can start answering for you specifically — your allergies,
+            your conditions, your medicines.
+          </p>
+          <Button size="lg" className="mt-8 w-full sm:w-auto" onClick={() => navigate('/profile-setup')}>
+            <Plus className="h-5 w-5" aria-hidden="true" />
+            Set up the first profile
+          </Button>
+          <div className="mt-6">
+            <button
+              type="button"
+              onClick={() => void handleLogout()}
+              className="min-h-[44px] rounded px-3 text-label text-ink-muted underline underline-offset-4 transition-colors duration-micro hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+            >
+              Sign out
+            </button>
+          </div>
         </motion.div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-background flex flex-col">
-      <div className="flex-1 flex flex-col items-center justify-center p-4">
+    <div className="flex min-h-screen flex-col bg-ground">
+      <main className="flex flex-1 flex-col items-center justify-center px-4 py-12 sm:px-6">
         <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
+          variants={stagger(0.05)}
+          initial="hidden"
+          animate="visible"
           className="w-full max-w-3xl"
         >
-          <h1 className="text-3xl md:text-4xl font-bold text-text-primary text-center mb-2">
-            Who's using VitalAI?
-          </h1>
-          <p className="text-text-muted text-center mb-10">
-            Select a profile to continue
-          </p>
+          <motion.h1
+            variants={rise}
+            transition={transition(durations.enter)}
+            className="text-balance text-center font-display text-display text-ink"
+          >
+            Who&apos;s using VitalAI?
+          </motion.h1>
+          <motion.p
+            variants={rise}
+            transition={transition(durations.enter)}
+            className="mx-auto mt-3 max-w-reading text-center text-body-lg text-ink-muted"
+          >
+            Pick a profile and the answers will be about that person.
+          </motion.p>
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 md:gap-6 justify-items-center">
-            {profiles.map((profile, i) => (
-              <motion.div
-                key={profile._id}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.08 }}
-                whileHover={{ scale: 1.05, y: -4 }}
-                whileTap={{ scale: 0.95 }}
-              >
+          <ul className="mt-10 grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 md:grid-cols-4">
+            {profiles.map((profile) => (
+              <motion.li key={profile._id} variants={rise} transition={transition(durations.enter)}>
                 <button
+                  type="button"
                   onClick={() => handleSelectProfile(profile)}
-                  className="flex flex-col items-center text-center group focus:outline-none focus:ring-2 focus:ring-primary/50 rounded-2xl p-2"
-                  aria-label={`Select profile: ${profile.name}`}
+                  className="group flex w-full flex-col items-center gap-3 rounded-md border-2 border-ink/10 bg-surface p-4 text-center shadow-card transition-[border-color,box-shadow,transform] duration-micro ease-entrance hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-lift active:translate-y-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                  aria-label={`Continue as ${profile.name}`}
                 >
-                  <div
-                    className="w-20 h-20 md:w-24 md:h-24 rounded-full flex items-center justify-center text-3xl md:text-4xl mb-3 transition-shadow group-hover:shadow-lg group-hover:shadow-primary/20"
-                    style={{ backgroundColor: `${avatarColors[profile.avatar] || '#6366F1'}20` }}
-                  >
-                    {profile.avatar || '👤'}
-                  </div>
-                  <p className="text-sm md:text-base font-semibold text-text-primary group-hover:text-primary transition-colors">
-                    {profile.name}
-                  </p>
-                  <p className="text-xs text-text-muted mt-0.5">
-                    {profile.age ? `${profile.age} · ` : ''}{profile.dietType || 'No diet set'}
-                  </p>
+                  <AvatarChip avatar={profile.avatar} name={profile.name} />
+                  <span className="w-full break-words text-heading text-ink">{profile.name}</span>
+                  <span className="w-full break-words text-caption text-ink-muted">
+                    {profile.age ? (
+                      <>
+                        <span className="font-mono text-figure tabular-nums">{profile.age}</span>
+                        {' · '}
+                      </>
+                    ) : null}
+                    {profile.dietType || 'No diet set'}
+                  </span>
                 </button>
-              </motion.div>
+              </motion.li>
             ))}
 
             {profiles.length < 6 && (
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: profiles.length * 0.08 }}
-                whileHover={{ scale: 1.05, y: -4 }}
-                whileTap={{ scale: 0.95 }}
-              >
+              <motion.li variants={rise} transition={transition(durations.enter)}>
                 <button
+                  type="button"
                   onClick={() => navigate('/profile-setup')}
-                  className="flex flex-col items-center text-center group focus:outline-none focus:ring-2 focus:ring-primary/50 rounded-2xl p-2"
-                  aria-label="Add new profile"
+                  className="group flex h-full w-full flex-col items-center justify-center gap-3 rounded-md border-2 border-dashed border-line-strong bg-transparent p-4 text-center transition-colors duration-micro hover:border-primary hover:bg-surface/60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                  aria-label="Add another profile"
                 >
-                  <div className="w-20 h-20 md:w-24 md:h-24 rounded-full border-2 border-dashed border-border flex items-center justify-center mb-3 group-hover:border-primary/50 transition-colors">
-                    <Plus className="h-8 w-8 text-text-muted group-hover:text-primary transition-colors" />
-                  </div>
-                  <p className="text-sm md:text-base font-semibold text-text-muted group-hover:text-primary transition-colors">
-                    Add Profile
-                  </p>
+                  <span
+                    className="flex h-16 w-16 items-center justify-center rounded-full bg-sunk transition-colors duration-micro group-hover:bg-primary-soft sm:h-20 sm:w-20"
+                    aria-hidden="true"
+                  >
+                    <Plus className="h-7 w-7 text-ink-muted transition-colors duration-micro group-hover:text-primary" />
+                  </span>
+                  <span className="text-heading text-ink-muted transition-colors duration-micro group-hover:text-primary">
+                    Add someone
+                  </span>
                 </button>
-              </motion.div>
+              </motion.li>
             )}
-          </div>
+          </ul>
         </motion.div>
-      </div>
+      </main>
 
-      <div className="p-4 flex justify-center gap-4 border-t border-border">
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => navigate('/profile-setup')}
-          className="text-text-muted"
-        >
-          <Settings className="h-4 w-4 mr-2" /> Manage Profiles
+      <div className="flex flex-col justify-center gap-2 border-t border-line px-4 py-4 sm:flex-row sm:gap-4">
+        <Button variant="ghost" onClick={() => navigate('/profile-setup')}>
+          <Settings className="h-4 w-4" aria-hidden="true" />
+          Manage profiles
         </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={handleLogout}
-          className="text-text-muted"
-        >
-          <LogOut className="h-4 w-4 mr-2" /> Sign Out
+        <Button variant="ghost" onClick={() => void handleLogout()}>
+          <LogOut className="h-4 w-4" aria-hidden="true" />
+          Sign out
         </Button>
       </div>
     </div>

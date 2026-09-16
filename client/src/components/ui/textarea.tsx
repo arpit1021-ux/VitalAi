@@ -1,22 +1,26 @@
 import * as React from 'react';
 import { cn } from '@/lib/utils';
 
-export type TextareaProps = React.TextareaHTMLAttributes<HTMLTextAreaElement>;
+export interface TextareaProps extends React.TextareaHTMLAttributes<HTMLTextAreaElement> {
+  invalid?: boolean;
+}
 
-const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
-  ({ className, ...props }, ref) => {
-    return (
-      <textarea
-        className={cn(
-          'flex min-h-[80px] w-full rounded-xl border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:ring-2 focus:ring-primary/50 focus:border-primary disabled:cursor-not-allowed disabled:opacity-50',
-          className
-        )}
-        ref={ref}
-        {...props}
-      />
-    );
-  }
+export const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
+  ({ className, invalid, ...props }, ref) => (
+    <textarea
+      ref={ref}
+      aria-invalid={invalid || props['aria-invalid']}
+      className={cn(
+        'w-full min-h-[6rem] rounded bg-surface px-3.5 py-3 text-body text-ink resize-y',
+        'border-2 transition-[border-color,background-color] duration-micro ease-entrance',
+        'placeholder:text-ink-faint',
+        'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
+        'disabled:bg-sunk disabled:text-ink-faint disabled:cursor-not-allowed',
+        invalid ? 'border-danger bg-danger-soft/50' : 'border-ink/15 hover:border-ink/30',
+        className,
+      )}
+      {...props}
+    />
+  ),
 );
 Textarea.displayName = 'Textarea';
-
-export { Textarea };

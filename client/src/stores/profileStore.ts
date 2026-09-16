@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { profiles as profilesApi } from '@/lib/api';
+import { describeError, isCancellation, type DescribedError } from '@/lib/errors';
 
 interface Profile {
   _id: string;
@@ -20,6 +21,19 @@ interface ProfileState {
   profiles: Profile[];
   activeProfile: Profile | null;
   isLoading: boolean;
+  /**
+   * Set once a fetch has come back, successfully or not. Routing must not act
+   * on an empty profile list before this is true: an empty array means
+   * "not asked yet" until then.
+   */
+  hasLoaded: boolean;
+  /**
+   * Why the last fetch failed, or null. Distinguishes "this account has no
+   * profiles" from "we could not find out" — swallowing this sent a user
+   * whose request failed into profile setup to re-create a profile they
+   * already had.
+   */
+  loadError: DescribedError | null;
   hasSelectedProfile: boolean;
   fetchProfiles: () => Promise<void>;
   setActiveProfile: (profile: Profile) => void;
@@ -32,9 +46,11 @@ export const useProfileStore = create<ProfileState>((set, get) => ({
   profiles: [],
   activeProfile: null,
   isLoading: false,
+  hasLoaded: false,
+  loadError: null,
   hasSelectedProfile: false,
   fetchProfiles: async () => {
-    set({ isLoading: true });
+    set({ isLoading: true, loadError: null });
     try {
       const res = await profilesApi.getAll();
       const profiles = res.data.profiles || res.data;
@@ -45,6 +61,8 @@ export const useProfileStore = create<ProfileState>((set, get) => ({
       set({
         profiles,
         isLoading: false,
+        hasLoaded: true,
+        loadError: null,
         hasSelectedProfile: hasSaved,
         activeProfile: found || null,
       });
@@ -52,8 +70,12 @@ export const useProfileStore = create<ProfileState>((set, get) => ({
       if (found) {
         localStorage.setItem('activeProfileId', found._id);
       }
-    } catch {
-      set({ isLoading: false });
+    } catch (error) {
+      if (isCancellation(error)) {
+        set({ isLoading: false });
+        return;
+      }
+      set({ isLoading: false, hasLoaded: true, loadError: describeError(error) });
     }
   },
   setActiveProfile: (profile) => {
@@ -65,7 +87,12 @@ export const useProfileStore = create<ProfileState>((set, get) => ({
     const newProfile = res.data.profile || res.data;
     set((state) => ({ profiles: [...state.profiles, newProfile] }));
     if (!get().activeProfile) {
-      set({ activeProfile: newProfile });
+      // `hasSelectedProfile` has to move with `activeProfile`. Without it the
+      // guard saw "profiles exist but none chosen", redirected to
+      // /select-profile, which saw a single profile already active and
+      // redirected back to / — a loop that rendered as a blank white page
+      // until a reload read the choice back out of localStorage.
+      set({ activeProfile: newProfile, hasSelectedProfile: true });
       localStorage.setItem('activeProfileId', newProfile._id);
     }
   },
@@ -83,7 +110,8 @@ export const useProfileStore = create<ProfileState>((set, get) => ({
       const filtered = state.profiles.filter((p) => p._id !== id);
       const newActive = state.activeProfile?._id === id ? filtered[0] || null : state.activeProfile;
       if (newActive) localStorage.setItem('activeProfileId', newActive._id);
-      return { profiles: filtered, activeProfile: newActive };
+      else localStorage.removeItem('activeProfileId');
+      return { profiles: filtered, activeProfile: newActive, hasSelectedProfile: newActive !== null };
     });
   },
 }));

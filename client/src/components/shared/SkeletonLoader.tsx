@@ -34,13 +34,13 @@ export function ChatSkeleton() {
   return (
     <div className="space-y-4 p-4">
       <div className="flex justify-start">
-        <Skeleton className="h-10 w-64 rounded-2xl" />
+        <Skeleton className="h-10 w-64 rounded-md" />
       </div>
       <div className="flex justify-end">
-        <Skeleton className="h-10 w-48 rounded-2xl" />
+        <Skeleton className="h-10 w-48 rounded-md" />
       </div>
       <div className="flex justify-start">
-        <Skeleton className="h-16 w-80 rounded-2xl" />
+        <Skeleton className="h-16 w-80 rounded-md" />
       </div>
     </div>
   );

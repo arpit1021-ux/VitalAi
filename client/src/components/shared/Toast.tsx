@@ -70,22 +70,22 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         {toasts.map((toast) => (
           <div
             key={toast.id}
-            className="pointer-events-auto flex items-start gap-3 rounded-xl border border-border bg-surface px-4 py-3 shadow-lg"
+            className="pointer-events-auto flex items-start gap-3 rounded-md border border-line bg-surface px-4 py-3 shadow-overlay"
           >
             {toast.tone === 'failure' ? (
-              <AlertTriangle className="h-4 w-4 text-warning flex-shrink-0 mt-0.5" aria-hidden="true" />
+              <AlertTriangle className="h-4 w-4 text-caution flex-shrink-0 mt-0.5" aria-hidden="true" />
             ) : (
               <Check className="h-4 w-4 text-primary flex-shrink-0 mt-0.5" aria-hidden="true" />
             )}
             <div className="min-w-0 flex-1">
-              <p className="text-sm text-text-primary">{toast.title}</p>
-              {toast.detail && <p className="text-xs text-text-muted mt-0.5">{toast.detail}</p>}
+              <p className="text-sm text-ink">{toast.title}</p>
+              {toast.detail && <p className="text-xs text-ink-muted mt-0.5">{toast.detail}</p>}
             </div>
             <button
               type="button"
               onClick={() => dismiss(toast.id)}
               aria-label="Dismiss"
-              className="text-text-muted hover:text-text-primary flex-shrink-0"
+              className="text-ink-muted hover:text-ink flex-shrink-0"
             >
               <X className="h-4 w-4" aria-hidden="true" />
             </button>

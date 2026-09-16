@@ -15,6 +15,19 @@ const router = Router();
 
 router.use(authenticate);
 
+/**
+ * A date that may legitimately be absent.
+ *
+ * `<input type="date">` submits an empty string when it is cleared, and
+ * `z.coerce.date()` turns that into an Invalid Date rather than into nothing —
+ * so a field the form calls optional was rejected with "Invalid date" and the
+ * item could not be saved without one.
+ */
+const optionalDate = z
+  .union([z.literal(''), z.coerce.date()])
+  .optional()
+  .transform((value) => (value === '' ? undefined : value));
+
 const createItemSchema = z
   .object({
     profileId: objectId,
@@ -22,7 +35,7 @@ const createItemSchema = z
     quantity: z.number().positive().max(100_000).optional(),
     unit: z.string().trim().max(24).optional(),
     category: z.enum(['grains', 'dairy', 'produce', 'protein', 'spices', 'other']).optional(),
-    expiryDate: z.coerce.date().optional(),
+    expiryDate: optionalDate,
   })
   .strict();
 
@@ -35,7 +48,7 @@ const updateItemSchema = z
     quantity: z.number().positive().max(100_000).optional(),
     unit: z.string().trim().max(24).optional(),
     category: z.enum(['grains', 'dairy', 'produce', 'protein', 'spices', 'other']).optional(),
-    expiryDate: z.coerce.date().optional(),
+    expiryDate: optionalDate,
   })
   .strict()
   .refine((value) => Object.keys(value).length > 0, 'Nothing to update.');
@@ -48,26 +61,23 @@ const recipeRequestSchema = z
   })
   .strict();
 
-router.post('/', async (req: Request, res: Response) => {
-  try {
-    const data = createItemSchema.parse(req.body);
+// Validated by the middleware rather than in the handler: a ZodError raised
+// here was caught locally and returned as a bare message, losing the field it
+// belonged to — so "Invalid date" appeared as a form-level block instead of
+// under the input that caused it. The local catch also swallowed AppError, so
+// an ownership failure came back as a 500.
+router.post('/', validate({ body: createItemSchema }), asyncHandler(async (req: Request, res: Response) => {
+  const data = req.body as z.infer<typeof createItemSchema>;
 
-    const profile = await Profile.findOne({ _id: data.profileId, userId: req.jwtUser!.id });
-    if (!profile) {
-      throw notFound('That profile');
-    }
-
-    const item = await PantryItem.create(data);
-
-    res.status(201).json({ item });
-  } catch (error) {
-    if (error instanceof z.ZodError) {
-      res.status(400).json({ error: error.errors[0].message });
-      return;
-    }
-    res.status(500).json({ error: 'Failed to create pantry item' });
+  const profile = await Profile.findOne({ _id: data.profileId, userId: req.jwtUser!.id });
+  if (!profile) {
+    throw notFound('That profile');
   }
-});
+
+  const item = await PantryItem.create(data);
+
+  res.status(201).json({ item });
+}));
 
 router.get('/:profileId', validate({ params: z.object({ profileId: objectId }) }), asyncHandler(async (req: Request, res: Response) => {
   const profile = await Profile.findOne({
