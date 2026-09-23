@@ -16,6 +16,7 @@ import { ErrorState } from '@/components/shared/ErrorState';
  * screen that has to be instant.
  */
 const WelcomePage = lazy(() => import('@/pages/WelcomePage'));
+const NotFoundPage = lazy(() => import('@/pages/NotFoundPage'));
 const ProfileSelectionPage = lazy(() => import('@/pages/ProfileSelectionPage'));
 const ProfileSetupPage = lazy(() => import('@/pages/ProfileSetupPage'));
 const EditProfilePage = lazy(() => import('@/pages/EditProfilePage'));
@@ -268,7 +269,9 @@ function AppRoutes() {
               </ProtectedRoute>
             }
           />
-          <Route path="*" element={<Navigate to="/" replace />} />
+          {/* Not a redirect: silently sending a wrong address to the dashboard
+              hides the mistake and makes a stale link look like it worked. */}
+          <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </AnimatePresence>
       </Suspense>

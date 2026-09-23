@@ -1,0 +1,72 @@
+# Render blueprint for the VitalAI API.
+#
+# Deploy with: render.com → New → Blueprint → point at this repo.
+# Everything marked `sync: false` must be set by hand in the dashboard; they are
+# secrets and must never live in the repo.
+services:
+  - type: web
+    name: vitalai-api
+    runtime: node
+    plan: free
+    rootDir: server
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    # The app already exposes a readiness probe that checks its dependencies,
+    # which is stricter than a liveness ping and is what should gate traffic.
+    healthCheckPath: /health/ready
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "22"
+
+      # --- Set these in the dashboard --------------------------------------
+      - key: MONGODB_URI
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      # Generate each with: openssl rand -hex 32
+      # ENCRYPTION_KEY must be 64 hex characters and must differ from both JWT
+      # secrets. Losing it makes stored health data permanently unreadable —
+      # keep a copy somewhere safe before the first deploy.
+      - key: JWT_SECRET
+        sync: false
+      - key: JWT_REFRESH_SECRET
+        sync: false
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: PINECONE_API_KEY
+        sync: false
+      - key: PINECONE_INDEX
+        sync: false
+      - key: CLOUDINARY_URL
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+
+      # --- URLs. All three must be https in production; the app refuses to
+      #     boot otherwise. Because the client proxies /api through its own
+      #     origin, CORS_ORIGINS is the CLIENT's domain, not this service's.
+      - key: APP_URL
+        sync: false
+      - key: API_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+
+      # --- Mail. `log` does not deliver, so production requires smtp.
+      - key: EMAIL_TRANSPORT
+        value: smtp
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: EMAIL_FROM
+        sync: false

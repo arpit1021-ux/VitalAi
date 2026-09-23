@@ -1,0 +1,22 @@
+# VitalAI
+# The marketing surface is indexable; anything behind sign-in is not, and none
+# of it is reachable without a session anyway.
+User-agent: *
+Allow: /$
+Allow: /privacy
+Disallow: /scanner
+Disallow: /chat
+Disallow: /pantry
+Disallow: /recipes
+Disallow: /recipe-detail
+Disallow: /community
+Disallow: /history
+Disallow: /timeline
+Disallow: /insights
+Disallow: /settings
+Disallow: /profile
+Disallow: /profile-setup
+Disallow: /select-profile
+Disallow: /welcome
+
+Sitemap: https://REPLACE_WITH_YOUR_DOMAIN/sitemap.xml
