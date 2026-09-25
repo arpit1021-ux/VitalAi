@@ -11,3 +11,4 @@ client/.env
 .DS_Store
 coverage/
 client/tsconfig.tsbuildinfo
+INTERVIEW-PREP.md

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Router, Request, Response } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { assertIsImage, upload, uploadToCloudinary } from '../services/upload.js';
@@ -93,6 +94,14 @@ router.post('/food', upload.single('image'), validate({ body: scanBodySchema }),
       Medications: ${profile.medications?.map(m => `${m.name} ${m.dosage}`).join(', ') || 'None'}
     `;
 
+    // A short digest of everything in the profile that can change a verdict.
+    // The vision cache is keyed on it so an allergy edit invalidates cached
+    // analyses instead of replaying a verdict from before the change.
+    const profileFingerprint = createHash('sha256')
+      .update(profileContext)
+      .digest('hex')
+      .slice(0, 16);
+
     const labelSafety = assessUntrusted(extractedText ?? '');
     if (labelSafety.suspicious) {
       // Worth knowing about: a label whose text tries to steer the analysis is
@@ -170,18 +179,26 @@ Return a JSON response with this exact structure:
       });
 
       const vision = await generateTextFromImage({
-
         userId: req.jwtUser!.id,
-
         operation: 'scan.food_vision',
         systemPrompt,
         userMessage,
+        // The profile has to travel with the image. Without this the prompt
+        // told the model to judge the photo "against the profile in
+        // <health_profile>" and then never sent <health_profile> — so a photo
+        // scan, the primary path, was answered with no knowledge of the
+        // person's allergies, conditions or medicines. It is a delimited
+        // untrusted block for the same reason every other input is: profile
+        // fields are user-supplied text and must not be able to issue
+        // instructions.
+        untrusted: [{ label: 'health_profile', content: clampUntrusted(profileContext, 4000) }],
         context: ragContext,
         imageBuffer: req.file!.buffer,
         mimeType: req.file!.mimetype,
-        // Scoping the vision cache to the profile keeps one user's analysis
-        // from ever being served to another.
-        cacheScope: String(profile._id),
+        // Scoped to the profile AND to the profile's current content: keying on
+        // the image alone meant that editing an allergy and re-scanning the
+        // same photo replayed the verdict computed before the edit.
+        cacheScope: `${String(profile._id)}:${profileFingerprint}`,
       });
 
       if (vision.usedVision) {

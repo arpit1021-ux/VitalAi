@@ -70,7 +70,9 @@ chatSessionSchema.index(
   { expireAfterSeconds: env.DATA_RETENTION_DAYS * 24 * 60 * 60, name: 'retention_ttl' },
 );
 
-chatSessionSchema.index({ userId: 1, profileId: 1, updatedAt: -1 });
+// Same correction as ScanHistory: the session list filters on profileId
+// alone, so an index led by userId could never be used for it.
+chatSessionSchema.index({ profileId: 1, updatedAt: -1, userId: 1 });
 
 const ChatSession: Model<IChatSession> = mongoose.model<IChatSession>(
   'ChatSession',

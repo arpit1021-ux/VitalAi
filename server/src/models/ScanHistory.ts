@@ -68,7 +68,12 @@ scanHistorySchema.index(
   { expireAfterSeconds: env.DATA_RETENTION_DAYS * 24 * 60 * 60, name: 'retention_ttl' },
 );
 
-scanHistorySchema.index({ userId: 1, profileId: 1, createdAt: -1 });
+// Leads with profileId because that is what the history route filters on.
+// The previous index led with userId, which the query does not mention — and
+// MongoDB can only use a prefix of a compound index, so it was never eligible
+// and the list was a collection scan with an in-memory sort. Keeping userId as
+// a trailing field still lets the index cover an account-scoped query.
+scanHistorySchema.index({ profileId: 1, createdAt: -1, userId: 1 });
 
 // Replaces the unindexed $regex scan used by history search.
 scanHistorySchema.index(

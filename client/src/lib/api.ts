@@ -30,8 +30,23 @@ function idempotent(key?: string): Record<string, string> {
   return key ? { 'Idempotency-Key': key } : {};
 }
 
-/** Paths where a 401 is an answer rather than an expired session. */
-const NO_REFRESH_PATHS = ['/auth/login', '/auth/register', '/auth/refresh', '/auth/me'];
+/**
+ * Paths where a 401 is an answer rather than an expired session.
+ *
+ * `/auth/me` is deliberately NOT here. It was, and that quietly defeated the
+ * whole refresh mechanism: the app calls it on every load, the access token
+ * only lives 15 minutes, so anyone returning after a break got a 401 that was
+ * never refreshed and was shown as signed out — despite holding a refresh
+ * cookie good for seven days.
+ */
+const NO_REFRESH_PATHS = ['/auth/login', '/auth/register', '/auth/refresh'];
+
+/**
+ * The boot-time session check. A 401 here from someone who was simply never
+ * signed in is the normal case, not a session ending, so its failure must not
+ * raise the "your session has ended" notice.
+ */
+const SESSION_CHECK_PATH = '/auth/me';
 
 type Retryable = InternalAxiosRequestConfig & { _retried?: boolean };
 
@@ -111,10 +126,15 @@ api.interceptors.response.use(
       // Replay the original request with the new cookie.
       return await api.request(original as AxiosRequestConfig);
     } catch {
-      announceSessionEnd({
-        message: error.response?.data?.error ?? 'Your session has ended.',
-        action: error.response?.data?.action ?? 'Sign in again to continue.',
-      });
+      // A failed refresh behind the boot check means "not signed in", which is
+      // the ordinary state of a first-time visitor — announcing a lost session
+      // to someone who never had one is noise.
+      if (!url.includes(SESSION_CHECK_PATH)) {
+        announceSessionEnd({
+          message: error.response?.data?.error ?? 'Your session has ended.',
+          action: error.response?.data?.action ?? 'Sign in again to continue.',
+        });
+      }
       return Promise.reject(error);
     }
   },
