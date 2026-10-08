@@ -107,7 +107,7 @@ router.post('/message', validate({ body: messageSchema }), asyncHandler(async (r
 
   session.messages.push({ role: 'user', content, timestamp: new Date() });
 
-  const { context: ragContext, sources, ragSources } = await getRagContext(content);
+  const { context: ragContext, sources, ragSources, grounded } = await getRagContext(content);
 
   // Profile fields are typed by the user, so they are untrusted input even
   // though they belong to the person asking. They used to be interpolated
@@ -190,6 +190,7 @@ ${languageInstruction}`;
     sessionId: session._id,
     sources,
     ragSources: ragSources.length > 0 ? ragSources : null,
+    grounded,
   });
 }));
 

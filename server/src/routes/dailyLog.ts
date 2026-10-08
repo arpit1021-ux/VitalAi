@@ -6,6 +6,7 @@ import { objectId, validate } from '../middleware/validate.js';
 import { z } from 'zod';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { badRequest, notFound } from '../utils/AppError.js';
+import { currentStreak, longestStreak, todayKey } from '../utils/streak.js';
 
 const PLATE_GROUPS = ['veg', 'fruit', 'protein', 'grains', 'dairy'] as const;
 
@@ -22,7 +23,6 @@ const router = Router();
 
 router.use(authenticate);
 
-const getToday = (): string => new Date().toISOString().split('T')[0];
 
 const CHALLENGES = [
   'Drink a glass of water before every meal today.',
@@ -38,7 +38,7 @@ const CHALLENGES = [
 ];
 
 async function getOrCreateTodayLog(profileId: string): Promise<any> {
-  const today = getToday();
+  const today = todayKey();
   let log = await DailyLog.findOne({ profileId, date: today });
   if (!log) {
     log = await DailyLog.create({
@@ -194,7 +194,7 @@ router.put('/:profileId/challenge', validate({ params: z.object({ profileId: obj
     throw badRequest('The challenge can only be marked done or not done.', 'Try tapping the control again.');
   }
 
-  const today = getToday();
+  const today = todayKey();
   const log = await DailyLog.findOne({ profileId: req.params.profileId, date: today });
   if (!log) {
     throw notFound("Today's log", 'Open the dashboard once to start today, then try again.');
@@ -229,38 +229,12 @@ router.get('/:profileId/streak', validate({ params: z.object({ profileId: object
     return;
   }
 
-  const dates = activeLogs.map((l) => l.date);
+  const dates = activeLogs.map((log) => log.date);
 
-  let currentStreak = 0;
-  const today = getToday();
-  const checkDate = new Date(today + 'T00:00:00Z');
-
-  for (let i = 0; i < dates.length; i++) {
-    const expected = checkDate.toISOString().split('T')[0];
-    if (dates[i] === expected) {
-      currentStreak++;
-      checkDate.setDate(checkDate.getDate() - 1);
-    } else {
-      break;
-    }
-  }
-
-  let longestStreak = 0;
-  let streak = 1;
-  for (let i = 1; i < dates.length; i++) {
-    const prev = new Date(dates[i - 1] + 'T00:00:00Z');
-    const curr = new Date(dates[i] + 'T00:00:00Z');
-    const diffDays = (prev.getTime() - curr.getTime()) / (1000 * 60 * 60 * 24);
-    if (diffDays === 1) {
-      streak++;
-    } else {
-      longestStreak = Math.max(longestStreak, streak);
-      streak = 1;
-    }
-  }
-  longestStreak = Math.max(longestStreak, streak);
-
-  res.json({ currentStreak, longestStreak });
+  res.json({
+    currentStreak: currentStreak(dates, todayKey()),
+    longestStreak: longestStreak(dates),
+  });
 }));
 
 router.post('/:profileId/activity', validate({ params: z.object({ profileId: objectId }) }), asyncHandler(async (req: Request, res: Response) => {

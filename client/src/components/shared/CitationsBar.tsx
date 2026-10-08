@@ -12,6 +12,13 @@ interface CitationsBarProps {
   sources?: string[];
   /** Preferred: source plus the knowledge-base topic it came from. */
   ragSources?: RagSource[] | null;
+  /**
+   * Whether retrieval actually found anything. The server has always returned
+   * this and nothing read it, so an answer written with no reference material
+   * looked identical to a cited one — in a product whose case for itself is
+   * that it cites sources.
+   */
+  grounded?: boolean;
 }
 
 /**
@@ -21,7 +28,7 @@ interface CitationsBarProps {
  * but they are not the finding, and a wall of chips above the answer reads as
  * more important than the answer.
  */
-export function CitationsBar({ sources, ragSources }: CitationsBarProps) {
+export function CitationsBar({ sources, ragSources, grounded }: CitationsBarProps) {
   const [expanded, setExpanded] = useState(false);
   const panelId = useId();
 
@@ -34,7 +41,23 @@ export function CitationsBar({ sources, ragSources }: CitationsBarProps) {
       ? ragSources
       : [...new Set(sources ?? [])].map((source) => ({ source }));
 
-  if (citations.length === 0) return null;
+  if (citations.length === 0) {
+    // Said plainly rather than left blank: this answer came from the model's
+    // own knowledge, which is a weaker thing and the reader should know it.
+    if (grounded === false) {
+      return (
+        <p className="mt-3 flex items-start gap-1.5 text-caption text-caution-ink">
+          <BookOpen className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" aria-hidden="true" />
+          <span>
+            No reference sources were available for this one, so treat it as general guidance and
+            check anything important with a professional.
+          </span>
+        </p>
+      );
+    }
+
+    return null;
+  }
 
   const uniqueTopics = [...new Set(citations.map((r) => r.topic).filter(Boolean))];
 

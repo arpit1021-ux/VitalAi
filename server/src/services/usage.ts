@@ -1,5 +1,6 @@
 import { env } from '../config/env.js';
 import { store } from './store.js';
+import { getRequestContext } from '../middleware/requestContext.js';
 import { logger } from '../utils/logger.js';
 import { tooManyRequests, serviceUnavailable } from '../utils/AppError.js';
 
@@ -71,14 +72,30 @@ function hoursUntilReset(seconds: number): string {
 }
 
 /**
- * Checked before a model call, not after.
+ * What a request is charged before it runs.
  *
- * A budget enforced only on the way out lets a single expensive request blow
- * straight through it. This refuses the request that would exceed the
- * allowance, which means the allowance can be exceeded by at most the cost of
- * one in-flight call.
+ * A budget verified by reading a counter and then acting on it is racy: two
+ * requests can both read a figure under the limit before either records
+ * anything, and both proceed. Charging first and refunding the difference
+ * afterwards makes the decision atomic, at the cost of briefly over-counting a
+ * request that turns out to be cheap.
+ *
+ * The figures are a deliberate over-estimate of a typical call, so the charge
+ * is nearly always refunded downwards rather than upwards.
  */
-export async function assertWithinBudget(userId: string): Promise<void> {
+const RESERVE_INPUT_TOKENS = 4000;
+const RESERVE_OUTPUT_TOKENS = 1500;
+
+/**
+ * Charges the caller for a model call about to be made, and refuses the
+ * request if that charge would take them past their allowance.
+ *
+ * The service-wide ceiling above it is read rather than reserved: it is a
+ * kill-switch measured in dollars across every user, so being one in-flight
+ * request late to trip is immaterial, and reserving against it would need a
+ * cost estimate the caller does not have yet.
+ */
+export async function reserveBudget(userId: string): Promise<void> {
   const status = await getBudgetStatus(userId);
 
   if (status.spendUsd >= status.spendCeilingUsd) {
@@ -93,11 +110,20 @@ export async function assertWithinBudget(userId: string): Promise<void> {
     );
   }
 
-  if (status.inputUsed >= status.inputLimit || status.outputUsed >= status.outputLimit) {
+  const [inputUsed, outputUsed] = await Promise.all([
+    store.increment(userKey(userId, 'in'), RESERVE_INPUT_TOKENS, DAY_SECONDS),
+    store.increment(userKey(userId, 'out'), RESERVE_OUTPUT_TOKENS, DAY_SECONDS),
+  ]);
+
+  if (inputUsed > status.inputLimit || outputUsed > status.outputLimit) {
+    // Over the line, so the charge is given back before refusing: a rejected
+    // request must not consume allowance.
+    await refund({ inputTokens: RESERVE_INPUT_TOKENS, outputTokens: RESERVE_OUTPUT_TOKENS }, userId);
+
     logger.warn('User daily token budget exhausted', {
       userId,
-      inputUsed: status.inputUsed,
-      outputUsed: status.outputUsed,
+      inputUsed,
+      outputUsed,
     });
 
     throw tooManyRequests(
@@ -105,6 +131,47 @@ export async function assertWithinBudget(userId: string): Promise<void> {
       `It resets ${hoursUntilReset(status.resetsInSeconds)}. Your scans, chats and history are all still available in the meantime.`,
     );
   }
+
+  const context = getRequestContext();
+  if (context) {
+    context.aiReservation = {
+      inputTokens: RESERVE_INPUT_TOKENS,
+      outputTokens: RESERVE_OUTPUT_TOKENS,
+    };
+  }
+}
+
+async function refund(
+  reservation: { inputTokens: number; outputTokens: number },
+  userId: string,
+): Promise<void> {
+  try {
+    await Promise.all([
+      store.increment(userKey(userId, 'in'), -reservation.inputTokens, DAY_SECONDS),
+      store.increment(userKey(userId, 'out'), -reservation.outputTokens, DAY_SECONDS),
+    ]);
+  } catch (error) {
+    // An unrefunded reservation makes the day's allowance smaller than it
+    // should be, which is the safe direction to fail in. It is logged because
+    // it is still wrong.
+    logger.error('Failed to refund an AI budget reservation', error, { userId });
+  }
+}
+
+/**
+ * Releases a charge taken for a request that never reached a model.
+ *
+ * Mounted on the response, so a handler that throws after the budget
+ * middleware — a validation failure, a missing profile — does not leave the
+ * caller paying for work that never happened.
+ */
+export async function releaseUnusedBudget(userId: string): Promise<void> {
+  const context = getRequestContext();
+  const reservation = context?.aiReservation;
+  if (!context || !reservation) return;
+
+  context.aiReservation = undefined;
+  await refund(reservation, userId);
 }
 
 /**
@@ -124,10 +191,19 @@ export async function recordUsage(
   const writes: Promise<unknown>[] = [store.increment(spendKey(), costMicros, DAY_SECONDS)];
 
   if (userId) {
-    writes.push(
-      store.increment(userKey(userId, 'in'), usage.inputTokens, DAY_SECONDS),
-      store.increment(userKey(userId, 'out'), usage.outputTokens, DAY_SECONDS),
-    );
+    // The reservation taken before the call is already on the counters, so
+    // what gets written here is the difference — usually negative, because the
+    // reservation deliberately over-estimates. A second model call in the same
+    // request finds no reservation left and is charged in full.
+    const context = getRequestContext();
+    const reservation = context?.aiReservation;
+    if (context) context.aiReservation = undefined;
+
+    const inputDelta = usage.inputTokens - (reservation?.inputTokens ?? 0);
+    const outputDelta = usage.outputTokens - (reservation?.outputTokens ?? 0);
+
+    if (inputDelta !== 0) writes.push(store.increment(userKey(userId, 'in'), inputDelta, DAY_SECONDS));
+    if (outputDelta !== 0) writes.push(store.increment(userKey(userId, 'out'), outputDelta, DAY_SECONDS));
   }
 
   try {

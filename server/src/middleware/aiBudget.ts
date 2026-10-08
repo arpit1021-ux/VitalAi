@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
-import { assertWithinBudget, getBudgetStatus } from '../services/usage.js';
+import { getBudgetStatus, releaseUnusedBudget, reserveBudget } from '../services/usage.js';
 import { unauthorized } from '../utils/AppError.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * Refuses a request that would exceed the caller's daily token allowance, or
@@ -9,6 +10,11 @@ import { unauthorized } from '../utils/AppError.js';
  * Mounted on every route that can reach a model. A per-route request counter
  * is trivially sidestepped by using a different route; a shared token budget
  * checked here is not.
+ *
+ * The allowance is charged here rather than verified here — see
+ * `reserveBudget`. Anything unspent is given back when the response finishes,
+ * which covers every way a request can end without reaching a model: a
+ * validation failure, a missing profile, a client that disconnects.
  */
 export async function enforceAiBudget(
   req: Request,
@@ -23,7 +29,13 @@ export async function enforceAiBudget(
   }
 
   try {
-    await assertWithinBudget(userId);
+    await reserveBudget(userId);
+
+    res.on('close', () => {
+      void releaseUnusedBudget(userId).catch((error: unknown) => {
+        logger.error('Failed to release an unused AI budget reservation', error, { userId });
+      });
+    });
 
     // Surfaced so the client can warn before the user hits the wall rather
     // than only after.

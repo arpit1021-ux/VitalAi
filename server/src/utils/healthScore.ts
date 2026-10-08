@@ -44,12 +44,24 @@ export function calculateHealthScore(data: {
     : 0;
 
   const supplementScans = recentScans.filter((s) => s.type === 'supplement');
+  // The model's goal-alignment figure is meant to be 1-10, and the schema
+  // caps what is stored — but this arithmetic is what the total score is built
+  // from, so it is clamped here too rather than trusting the input.
   const supplementQuality = supplementScans.length > 0
-    ? Math.round(
-        (supplementScans.reduce((sum, s) => sum + (s.aiVerdict?.goal_alignment_score || 0), 0) /
-          supplementScans.length /
-          10) *
-          20
+    ? Math.min(
+        20,
+        Math.max(
+          0,
+          Math.round(
+            (supplementScans.reduce(
+              (sum, s) => sum + Math.min(10, Math.max(0, Number(s.aiVerdict?.goal_alignment_score) || 0)),
+              0,
+            ) /
+              supplementScans.length /
+              10) *
+              20,
+          ),
+        ),
       )
     : 0;
 

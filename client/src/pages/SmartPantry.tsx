@@ -199,7 +199,11 @@ export default function SmartPantry() {
   });
 
   const items: PantryItem[] = toItems(pantryQuery.data);
+  // Soonest to expire first, undated items last. Two undated items have to
+  // compare equal: returning 1 in both directions breaks the antisymmetry
+  // Array.prototype.sort relies on, which leaves their order up to the engine.
   const sortedItems = [...items].sort((a, b) => {
+    if (!a.expiryDate && !b.expiryDate) return 0;
     if (!a.expiryDate) return 1;
     if (!b.expiryDate) return -1;
     return new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime();
@@ -711,7 +715,7 @@ export default function SmartPantry() {
               </Card>
             );
           })}
-          <CitationsBar sources={[]} ragSources={recipes?.ragSources} />
+          <CitationsBar sources={[]} ragSources={recipes?.ragSources} grounded={recipes?.grounded} />
           <DisclaimerBanner />
         </motion.section>
       )}

@@ -10,12 +10,13 @@ import { isPineconeWarm } from './config/pinecone.js';
 import { requestContext } from './middleware/requestContext.js';
 import { authenticate } from './middleware/auth.js';
 import { enforceAiBudget } from './middleware/aiBudget.js';
-import { generalRateLimiter, aiRateLimiter } from './middleware/rateLimiter.js';
+import { generalRateLimiter, aiRateLimiter, telemetryRateLimiter } from './middleware/rateLimiter.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { notFoundHandler } from './middleware/notFound.js';
 import { logger } from './utils/logger.js';
 import { idempotency } from './middleware/idempotency.js';
 
+import telemetryRoutes from './routes/telemetry.js';
 import authRoutes from './routes/auth.js';
 import accountRoutes from './routes/account.js';
 import profileRoutes from './routes/profiles.js';
@@ -105,12 +106,19 @@ export function createApp() {
     });
   });
 
+  app.use('/api/telemetry', telemetryRateLimiter, telemetryRoutes);
   app.use('/api/auth', authRoutes);
   app.use('/api/account', accountRoutes);
   app.use('/api/profiles', profileRoutes);
-  app.use('/api/scans', authenticate, aiRateLimiter, enforceAiBudget, idempotency, scanRoutes);
+  // Scan routes mount `idempotency` themselves, after multer has parsed the
+  // multipart body. Mounted here it ran first, so the fingerprint that is meant
+  // to stop one retry key being reused for a different request was computed
+  // from the method and URL alone.
+  app.use('/api/scans', authenticate, aiRateLimiter, enforceAiBudget, scanRoutes);
   app.use('/api/chat', authenticate, aiRateLimiter, enforceAiBudget, idempotency, chatRoutes);
-  app.use('/api/pantry', authenticate, enforceAiBudget, idempotency, pantryRoutes);
+  // Pantry generates recipes from a model, so it carries the AI limiter like
+  // every other route that can. It was the one that did not.
+  app.use('/api/pantry', authenticate, aiRateLimiter, enforceAiBudget, idempotency, pantryRoutes);
   app.use('/api/insights', authenticate, aiRateLimiter, enforceAiBudget, idempotency, insightRoutes);
   app.use('/api/dashboard', authenticate, aiRateLimiter, enforceAiBudget, idempotency, dashboardRoutes);
   app.use('/api/dailylog', dailyLogRoutes);

@@ -6,8 +6,11 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { ToastProvider } from '@/components/shared/Toast';
 import { AppShell } from '@/components/shared/AppShell';
+import { installGlobalErrorReporting } from '@/lib/reportError';
 import App from './App';
 import './index.css';
+
+installGlobalErrorReporting();
 
 const queryClient = new QueryClient({
   defaultOptions: {

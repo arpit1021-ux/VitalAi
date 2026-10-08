@@ -10,6 +10,13 @@ export interface RequestContext {
   method: string;
   path: string;
   startedAt: number;
+  /**
+   * Tokens charged to the caller's daily budget before a model call and
+   * settled once the real usage is known. It lives here rather than on the
+   * request because the service that records usage never sees the request
+   * object.
+   */
+  aiReservation?: { inputTokens: number; outputTokens: number };
 }
 
 const storage = new AsyncLocalStorage<RequestContext>();

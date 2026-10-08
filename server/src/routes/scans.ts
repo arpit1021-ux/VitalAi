@@ -13,6 +13,8 @@ import {
 } from '../schemas/aiOutputs.js';
 import { AppError, forbidden, notFound } from '../utils/AppError.js';
 import { logger } from '../utils/logger.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
+import { idempotency } from '../middleware/idempotency.js';
 import Profile from '../models/Profile.js';
 import ScanHistory from '../models/ScanHistory.js';
 import { objectId, searchTerm, validate } from '../middleware/validate.js';
@@ -76,53 +78,52 @@ const router = Router();
 
 router.use(authenticate);
 
-router.post('/food', upload.single('image'), validate({ body: scanBodySchema }), async (req: Request, res: Response) => {
-  try {
-    const { extractedText, profileId } = req.body as z.infer<typeof scanBodySchema>;
+router.post('/food', upload.single('image'), validate({ body: scanBodySchema }), idempotency, asyncHandler(async (req: Request, res: Response) => {
+  const { extractedText, profileId } = req.body as z.infer<typeof scanBodySchema>;
 
-    const profile = await Profile.findOne({ _id: profileId, userId: req.jwtUser!.id });
-    if (!profile) {
-      throw notFound('That profile');
-    }
+  const profile = await Profile.findOne({ _id: profileId, userId: req.jwtUser!.id });
+  if (!profile) {
+    throw notFound('That profile');
+  }
 
-    const profileContext = `
-      Name: ${profile.name}
-      Age: ${profile.age || 'Not specified'}
-      Diet Type: ${profile.dietType || 'Not specified'}
-      Allergies: ${profile.allergies?.join(', ') || 'None'}
-      Conditions: ${profile.conditions?.join(', ') || 'None'}
-      Medications: ${profile.medications?.map(m => `${m.name} ${m.dosage}`).join(', ') || 'None'}
-    `;
+  const profileContext = `
+    Name: ${profile.name}
+    Age: ${profile.age || 'Not specified'}
+    Diet Type: ${profile.dietType || 'Not specified'}
+    Allergies: ${profile.allergies?.join(', ') || 'None'}
+    Conditions: ${profile.conditions?.join(', ') || 'None'}
+    Medications: ${profile.medications?.map(m => `${m.name} ${m.dosage}`).join(', ') || 'None'}
+  `;
 
-    // A short digest of everything in the profile that can change a verdict.
-    // The vision cache is keyed on it so an allergy edit invalidates cached
-    // analyses instead of replaying a verdict from before the change.
-    const profileFingerprint = createHash('sha256')
-      .update(profileContext)
-      .digest('hex')
-      .slice(0, 16);
+  // A short digest of everything in the profile that can change a verdict.
+  // The vision cache is keyed on it so an allergy edit invalidates cached
+  // analyses instead of replaying a verdict from before the change.
+  const profileFingerprint = createHash('sha256')
+    .update(profileContext)
+    .digest('hex')
+    .slice(0, 16);
 
-    const labelSafety = assessUntrusted(extractedText ?? '');
-    if (labelSafety.suspicious) {
-      // Worth knowing about: a label whose text tries to steer the analysis is
-      // either a crafted image or a genuine adversarial product.
-      logger.warn('Scanned label matched injection heuristics', {
-        profileId: String(profile._id),
-        signals: labelSafety.signals,
-      });
-    }
+  const labelSafety = assessUntrusted(extractedText ?? '');
+  if (labelSafety.suspicious) {
+    // Worth knowing about: a label whose text tries to steer the analysis is
+    // either a crafted image or a genuine adversarial product.
+    logger.warn('Scanned label matched injection heuristics', {
+      profileId: String(profile._id),
+      signals: labelSafety.signals,
+    });
+  }
 
-    const hasImage = Boolean(req.file?.buffer.length);
-    if (hasImage) assertIsImage(req.file!);
+  const hasImage = Boolean(req.file?.buffer.length);
+  if (hasImage) assertIsImage(req.file!);
 
-    const searchQuery = hasImage
-      ? `food nutrition health safety ${profile.dietType || ''} ${profile.allergies?.join(' ') || ''} ${profile.conditions?.join(' ') || ''}`
-      : `food ingredients safety ${extractedText} ${profile.dietType || ''} ${profile.allergies?.join(' ') || ''}`;
+  const searchQuery = hasImage
+    ? `food nutrition health safety ${profile.dietType || ''} ${profile.allergies?.join(' ') || ''} ${profile.conditions?.join(' ') || ''}`
+    : `food ingredients safety ${extractedText} ${profile.dietType || ''} ${profile.allergies?.join(' ') || ''}`;
 
-    const { context: ragContext, sources, ragSources } = await getRagContext(searchQuery);
+  const { context: ragContext, sources, ragSources, grounded } = await getRagContext(searchQuery);
 
-    const systemPrompt = hasImage
-      ? `You are an expert food analyst and nutritionist. You can see an image provided by the user. Your job is to identify everything in the image and provide a thorough health analysis.
+  const systemPrompt = hasImage
+    ? `You are an expert food analyst and nutritionist. You can see an image provided by the user. Your job is to identify everything in the image and provide a thorough health analysis.
 
 CAPABILITIES — handle ALL of these image types:
 - Packaged food with labels: Read ingredient lists, nutrition facts, allergen warnings, product name, brand, expiry dates
@@ -144,306 +145,296 @@ Respond with ONLY the JSON object, no preamble, no explanation, no markdown fenc
 
 Return a JSON response with this exact structure:
 {
-  "verdict": "safe" | "caution" | "avoid",
-  "summary": "2-3 sentence summary of what you identified and overall health assessment",
-  "product_name": "name of the product OR list of identified items (e.g., 'Carrots, Beetroot, Bell Peppers')",
-  "extracted_ingredients": "full ingredient list if label visible, OR comma-separated list of identified raw food items with estimated quantities",
-  "extracted_nutrition": "nutritional information from label if visible, OR estimated nutritional breakdown of identified items",
-  "identified_items": [{"name": "item name", "quantity": "estimated quantity", "calories": "estimated calories", "key_nutrients": "main nutrients", "benefit": "health benefit for this user", "concern": "any concern or null"}],
-  "flagged_ingredients": [{"name": "ingredient", "reason": "why flagged", "severity": "low|medium|high"}],
-  "positive_nutrients": [{"name": "nutrient", "benefit": "why good for this user specifically"}],
-  "allergen_warnings": ["any allergens detected or relevant to user's profile"],
-  "recommendation": "actionable recommendation — what to eat, what to avoid, how to prepare for best nutrition",
-  "confidence": "high|medium|low",
-  "sources_used": ["list of sources referenced"]
+"verdict": "safe" | "caution" | "avoid",
+"summary": "2-3 sentence summary of what you identified and overall health assessment",
+"product_name": "name of the product OR list of identified items (e.g., 'Carrots, Beetroot, Bell Peppers')",
+"extracted_ingredients": "full ingredient list if label visible, OR comma-separated list of identified raw food items with estimated quantities",
+"extracted_nutrition": "nutritional information from label if visible, OR estimated nutritional breakdown of identified items",
+"identified_items": [{"name": "item name", "quantity": "estimated quantity", "calories": "estimated calories", "key_nutrients": "main nutrients", "benefit": "health benefit for this user", "concern": "any concern or null"}],
+"flagged_ingredients": [{"name": "ingredient", "reason": "why flagged", "severity": "low|medium|high"}],
+"positive_nutrients": [{"name": "nutrient", "benefit": "why good for this user specifically"}],
+"allergen_warnings": ["any allergens detected or relevant to user's profile"],
+"recommendation": "actionable recommendation — what to eat, what to avoid, how to prepare for best nutrition",
+"confidence": "high|medium|low",
+"sources_used": ["list of sources referenced"]
 }`
-      : TEXT_ONLY_SYSTEM_PROMPT;
+    : TEXT_ONLY_SYSTEM_PROMPT;
 
-    let userMessage: string;
+  let userMessage: string;
 
-    if (hasImage) {
-      userMessage =
-        'Analyse the attached image against the profile in <health_profile>. Identify every food item visible — a packaged product, raw ingredients, or a cooked meal — and for each give its nutritional value and how it fits this profile.';
+  if (hasImage) {
+    userMessage =
+      'Analyse the attached image against the profile in <health_profile>. Identify every food item visible — a packaged product, raw ingredients, or a cooked meal — and for each give its nutritional value and how it fits this profile.';
+  } else {
+    userMessage =
+      'Analyse the label in <label_text> against the profile in <health_profile>.';
+  }
+
+  let modelResponse: string;
+
+  if (hasImage) {
+    logger.info('Food scan using vision', {
+      profileId: String(profile._id),
+      bytes: req.file!.buffer.length,
+      mimeType: req.file!.mimetype,
+    });
+
+    const vision = await generateTextFromImage({
+      userId: req.jwtUser!.id,
+      operation: 'scan.food_vision',
+      systemPrompt,
+      userMessage,
+      // The profile has to travel with the image. Without this the prompt
+      // told the model to judge the photo "against the profile in
+      // <health_profile>" and then never sent <health_profile> — so a photo
+      // scan, the primary path, was answered with no knowledge of the
+      // person's allergies, conditions or medicines. It is a delimited
+      // untrusted block for the same reason every other input is: profile
+      // fields are user-supplied text and must not be able to issue
+      // instructions.
+      untrusted: [{ label: 'health_profile', content: clampUntrusted(profileContext, 4000) }],
+      context: ragContext,
+      imageBuffer: req.file!.buffer,
+      mimeType: req.file!.mimetype,
+      // Scoped to the profile AND to the profile's current content: keying on
+      // the image alone meant that editing an allergy and re-scanning the
+      // same photo replayed the verdict computed before the edit.
+      cacheScope: `${String(profile._id)}:${profileFingerprint}`,
+    });
+
+    if (vision.usedVision) {
+      modelResponse = vision.text;
     } else {
-      userMessage =
-        'Analyse the label in <label_text> against the profile in <health_profile>.';
-    }
-
-    let modelResponse: string;
-
-    if (hasImage) {
-      logger.info('Food scan using vision', {
-        profileId: String(profile._id),
-        bytes: req.file!.buffer.length,
-        mimeType: req.file!.mimetype,
-      });
-
-      const vision = await generateTextFromImage({
-        userId: req.jwtUser!.id,
-        operation: 'scan.food_vision',
-        systemPrompt,
-        userMessage,
-        // The profile has to travel with the image. Without this the prompt
-        // told the model to judge the photo "against the profile in
-        // <health_profile>" and then never sent <health_profile> — so a photo
-        // scan, the primary path, was answered with no knowledge of the
-        // person's allergies, conditions or medicines. It is a delimited
-        // untrusted block for the same reason every other input is: profile
-        // fields are user-supplied text and must not be able to issue
-        // instructions.
-        untrusted: [{ label: 'health_profile', content: clampUntrusted(profileContext, 4000) }],
-        context: ragContext,
-        imageBuffer: req.file!.buffer,
-        mimeType: req.file!.mimetype,
-        // Scoped to the profile AND to the profile's current content: keying on
-        // the image alone meant that editing an allergy and re-scanning the
-        // same photo replayed the verdict computed before the edit.
-        cacheScope: `${String(profile._id)}:${profileFingerprint}`,
-      });
-
-      if (vision.usedVision) {
-        modelResponse = vision.text;
-      } else {
-        // The configured provider has no vision path. Rather than sending a
-        // vision prompt to a text-only model, ask for a profile-based answer
-        // and mark the confidence down.
-        modelResponse = await generateText({
-          userId: req.jwtUser!.id,
-          operation: 'scan.food_text_fallback',
-          systemPrompt: TEXT_ONLY_SYSTEM_PROMPT,
-          userMessage: `Health Profile:\n${profileContext}\n\nThe photo could not be analysed. Give general guidance for this profile and set confidence to "low".`,
-          context: ragContext,
-        });
-      }
-    } else {
+      // The configured provider has no vision path. Rather than sending a
+      // vision prompt to a text-only model, ask for a profile-based answer
+      // and mark the confidence down.
       modelResponse = await generateText({
         userId: req.jwtUser!.id,
-        operation: 'scan.food_text',
-        maxOutputTokens: 2048,
-        untrusted: [
-          { label: 'health_profile', content: profileContext },
-          { label: 'label_text', content: clampUntrusted(extractedText ?? '', 8000) },
-        ],
-        systemPrompt,
-        userMessage,
+        operation: 'scan.food_text_fallback',
+        systemPrompt: TEXT_ONLY_SYSTEM_PROMPT,
+        userMessage:
+          'The photo could not be analysed. Give general guidance for the profile in <health_profile> and set confidence to "low".',
+        untrusted: [{ label: 'health_profile', content: clampUntrusted(profileContext, 4000) }],
         context: ragContext,
       });
     }
-
-    const parsed = parseValidatedJson(modelResponse, foodVerdictSchema, {
-      operation: 'scan.food',
-    });
-
-    if (!parsed) {
-      // Storing an unvalidated blob under aiVerdict would put a malformed —
-      // possibly injected — value into a record the user reads as a health
-      // judgement. Fail visibly instead.
-      throw new AppError({
-        status: 502,
-        code: 'MODEL_OUTPUT_INVALID',
-        message: 'The analysis came back in a form we could not read.',
-        action: 'Try the scan again. If it keeps failing, take a clearer photo of the label.',
-      });
-    }
-
-    const imageUrl = await uploadImageSafely(req.file);
-
-    const finalExtractedText = hasImage
-      ? (parsed as any).extracted_ingredients || extractedText
-      : extractedText;
-
-    await ScanHistory.create({
+  } else {
+    modelResponse = await generateText({
       userId: req.jwtUser!.id,
-      profileId,
-      type: 'food',
-      imageUrl,
-      extractedText: finalExtractedText,
-      aiVerdict: parsed,
-      sourcesUsed: sources,
-      ragUsed: sources.length > 0,
-      ragSourceCount: sources.length,
+      operation: 'scan.food_text',
+      maxOutputTokens: 2048,
+      untrusted: [
+        { label: 'health_profile', content: clampUntrusted(profileContext, 4000) },
+        { label: 'label_text', content: clampUntrusted(extractedText ?? '', 8000) },
+      ],
+      systemPrompt,
+      userMessage,
+      context: ragContext,
     });
-
-    res.json({ verdict: parsed, ragSources: ragSources.length > 0 ? ragSources : null });
-  } catch (error: any) {
-    logger.error('Food scan failed', error);
-    let userMessage = 'Food scan analysis failed. Please retry.';
-    const errMsg = String(error?.message || error || '');
-    if (errMsg.includes('503') || errMsg.includes('UNAVAILABLE')) {
-      userMessage = 'AI service is temporarily busy. Please try again in a few moments.';
-    } else if (errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED')) {
-      userMessage = 'Too many requests. Please wait a moment and try again.';
-    } else if (errMsg.includes('400') || errMsg.includes('INVALID_ARGUMENT')) {
-      userMessage = 'The image could not be processed. Please try a clearer photo.';
-    }
-    res.status(500).json({ error: userMessage });
   }
-});
 
-router.post('/medicine', upload.single('image'), validate({ body: scanBodySchema }), async (req: Request, res: Response) => {
-  try {
-    const { extractedText, profileId } = req.body as z.infer<typeof scanBodySchema>;
+  const parsed = parseValidatedJson(modelResponse, foodVerdictSchema, {
+    operation: 'scan.food',
+  });
 
-    const profile = await Profile.findOne({ _id: profileId, userId: req.jwtUser!.id });
-    if (!profile) {
-      throw notFound('That profile');
-    }
+  if (!parsed) {
+    // Storing an unvalidated blob under aiVerdict would put a malformed —
+    // possibly injected — value into a record the user reads as a health
+    // judgement. Fail visibly instead.
+    throw new AppError({
+      status: 502,
+      code: 'MODEL_OUTPUT_INVALID',
+      message: 'The analysis came back in a form we could not read.',
+      action: 'Try the scan again. If it keeps failing, take a clearer photo of the label.',
+    });
+  }
 
-    const profileContext = `
-      Name: ${profile.name}
-      Age: ${profile.age || 'Not specified'}
-      Conditions: ${profile.conditions?.join(', ') || 'None'}
-      Current Medications: ${profile.medications?.map(m => `${m.name} ${m.dosage}`).join(', ') || 'None'}
-      Allergies: ${profile.allergies?.join(', ') || 'None'}
-    `;
+  const imageUrl = await uploadImageSafely(req.file);
 
-    const { context: ragContext, sources, ragSources } = await getRagContext(
-      `drug interactions medicine ${extractedText} ${profile.medications?.map(m => m.name).join(' ') || ''}`
-    );
+  const finalExtractedText = hasImage
+    ? (parsed as any).extracted_ingredients || extractedText
+    : extractedText;
 
-    const systemPrompt = `You are analyzing medication information. Check for drug interactions, contraindications based on the user's current medications and health conditions.
+  await ScanHistory.create({
+    userId: req.jwtUser!.id,
+    profileId,
+    type: 'food',
+    imageUrl,
+    extractedText: finalExtractedText,
+    aiVerdict: parsed,
+    sourcesUsed: sources,
+    ragUsed: sources.length > 0,
+    ragSourceCount: sources.length,
+  });
+
+  res.json({ verdict: parsed, ragSources: ragSources.length > 0 ? ragSources : null, grounded });
+}));
+
+router.post('/medicine', upload.single('image'), validate({ body: scanBodySchema }), idempotency, asyncHandler(async (req: Request, res: Response) => {
+  const { extractedText, profileId } = req.body as z.infer<typeof scanBodySchema>;
+
+  const profile = await Profile.findOne({ _id: profileId, userId: req.jwtUser!.id });
+  if (!profile) {
+    throw notFound('That profile');
+  }
+
+  const profileContext = `
+    Name: ${profile.name}
+    Age: ${profile.age || 'Not specified'}
+    Conditions: ${profile.conditions?.join(', ') || 'None'}
+    Current Medications: ${profile.medications?.map(m => `${m.name} ${m.dosage}`).join(', ') || 'None'}
+    Allergies: ${profile.allergies?.join(', ') || 'None'}
+  `;
+
+  const { context: ragContext, sources, ragSources, grounded } = await getRagContext(
+    `drug interactions medicine ${extractedText} ${profile.medications?.map(m => m.name).join(' ') || ''}`
+  );
+
+  const systemPrompt = `You are analyzing medication information. Check for drug interactions, contraindications based on the user's current medications and health conditions.
 
 Respond with ONLY the JSON object, no preamble, no explanation, no markdown fencing.
 
 Return a JSON response with this exact structure:
 {
-  "interactions": [{"drug": "drug name", "severity": "mild|moderate|severe", "description": "interaction details"}],
-  "contraindications": [{"condition": "condition", "description": "why contraindicated"}],
-  "general_advice": "general advice about this medication",
-  "sources_used": ["list of sources referenced"]
+"interactions": [{"drug": "drug name", "severity": "mild|moderate|severe", "description": "interaction details"}],
+"contraindications": [{"condition": "condition", "description": "why contraindicated"}],
+"general_advice": "general advice about this medication",
+"sources_used": ["list of sources referenced"]
 }`;
 
-    const userMessage = `Health Profile:\n${profileContext}\n\nExtracted Medicine Text:\n${extractedText}\n\nPlease analyze this medication considering the user's current medications and health conditions.`;
+  // Both the profile and the OCR text are user-supplied, so neither is
+  // interpolated into the message: they travel as delimited untrusted blocks,
+  // clamped, exactly as the food path does. Pasting them into the prompt put
+  // attacker-controlled text where an instruction would be read.
+  const userMessage =
+    'Check the medicine in <label_text> against the profile in <health_profile>. Report interactions with the medications listed there and contraindications for the conditions listed there.';
 
-    const modelResponse = await generateText({
+  const modelResponse = await generateText({
+    userId: req.jwtUser!.id,
+    operation: 'scan.medicine',
+    systemPrompt,
+    userMessage,
+    untrusted: [
+      { label: 'health_profile', content: clampUntrusted(profileContext, 4000) },
+      { label: 'label_text', content: clampUntrusted(extractedText ?? '', 8000) },
+    ],
+    context: ragContext,
+  });
 
-      userId: req.jwtUser!.id,
+  const parsed = parseValidatedJson(modelResponse, medicineVerdictSchema, {
+    operation: 'scan.medicine',
+  });
 
-      operation: 'scan.medicine',
-      systemPrompt,
-      userMessage,
-      context: ragContext,
+  if (!parsed) {
+    throw new AppError({
+      status: 502,
+      code: 'MODEL_OUTPUT_INVALID',
+      message: 'The interaction check came back in a form we could not read.',
+      action: 'Try again. If it keeps failing, ask a pharmacist about this medication.',
     });
-
-    const parsed = parseValidatedJson(modelResponse, medicineVerdictSchema, {
-      operation: 'scan.medicine',
-    });
-
-    if (!parsed) {
-      throw new AppError({
-        status: 502,
-        code: 'MODEL_OUTPUT_INVALID',
-        message: 'The interaction check came back in a form we could not read.',
-        action: 'Try again. If it keeps failing, ask a pharmacist about this medication.',
-      });
-    }
-
-    const imageUrl = await uploadImageSafely(req.file);
-
-    await ScanHistory.create({
-      userId: req.jwtUser!.id,
-      profileId,
-      type: 'medicine',
-      imageUrl,
-      extractedText,
-      aiVerdict: parsed,
-      sourcesUsed: sources,
-      ragUsed: sources.length > 0,
-      ragSourceCount: sources.length,
-    });
-
-    res.json({ verdict: parsed, ragSources: ragSources.length > 0 ? ragSources : null });
-  } catch (error) {
-    res.status(500).json({ error: 'Medicine scan analysis failed. Please retry.' });
   }
-});
 
-router.post('/supplement', upload.single('image'), validate({ body: scanBodySchema }), async (req: Request, res: Response) => {
-  try {
-    const { extractedText, profileId } = req.body as z.infer<typeof scanBodySchema>;
+  const imageUrl = await uploadImageSafely(req.file);
 
-    const profile = await Profile.findOne({ _id: profileId, userId: req.jwtUser!.id });
-    if (!profile) {
-      throw notFound('That profile');
-    }
+  await ScanHistory.create({
+    userId: req.jwtUser!.id,
+    profileId,
+    type: 'medicine',
+    imageUrl,
+    extractedText,
+    aiVerdict: parsed,
+    sourcesUsed: sources,
+    ragUsed: sources.length > 0,
+    ragSourceCount: sources.length,
+  });
 
-    const profileContext = `
-      Name: ${profile.name}
-      Age: ${profile.age || 'Not specified'}
-      Fitness Goal: ${profile.fitnessGoal || 'Not specified'}
-      Activity Level: ${profile.activityLevel || 'Not specified'}
-      Diet Type: ${profile.dietType || 'Not specified'}
-      Conditions: ${profile.conditions?.join(', ') || 'None'}
-      Medications: ${profile.medications?.map(m => `${m.name} ${m.dosage}`).join(', ') || 'None'}
-    `;
+  res.json({ verdict: parsed, ragSources: ragSources.length > 0 ? ragSources : null, grounded });
+}));
 
-    const { context: ragContext, sources, ragSources } = await getRagContext(
-      `supplement ingredients safety ${extractedText} ${profile.fitnessGoal || ''}`
-    );
+router.post('/supplement', upload.single('image'), validate({ body: scanBodySchema }), idempotency, asyncHandler(async (req: Request, res: Response) => {
+  const { extractedText, profileId } = req.body as z.infer<typeof scanBodySchema>;
 
-    const systemPrompt = `You are analyzing a dietary supplement. Evaluate its ingredients for safety, goal alignment, and any banned substances.
+  const profile = await Profile.findOne({ _id: profileId, userId: req.jwtUser!.id });
+  if (!profile) {
+    throw notFound('That profile');
+  }
+
+  const profileContext = `
+    Name: ${profile.name}
+    Age: ${profile.age || 'Not specified'}
+    Fitness Goal: ${profile.fitnessGoal || 'Not specified'}
+    Activity Level: ${profile.activityLevel || 'Not specified'}
+    Diet Type: ${profile.dietType || 'Not specified'}
+    Conditions: ${profile.conditions?.join(', ') || 'None'}
+    Medications: ${profile.medications?.map(m => `${m.name} ${m.dosage}`).join(', ') || 'None'}
+  `;
+
+  const { context: ragContext, sources, ragSources, grounded } = await getRagContext(
+    `supplement ingredients safety ${extractedText} ${profile.fitnessGoal || ''}`
+  );
+
+  const systemPrompt = `You are analyzing a dietary supplement. Evaluate its ingredients for safety, goal alignment, and any banned substances.
 
 Respond with ONLY the JSON object, no preamble, no explanation, no markdown fencing.
 
 Return a JSON response with this exact structure:
 {
-  "goal_alignment_score": number (1-10),
-  "ingredient_breakdown": [{"name": "ingredient", "dosage": "amount", "benefit": "benefit", "concern": "concern or null"}],
-  "banned_substance_flags": [{"substance": "name", "reason": "why flagged"}],
-  "usage_protocol": "recommended usage based on profile",
-  "sources_used": ["list of sources referenced"]
+"goal_alignment_score": number (1-10),
+"ingredient_breakdown": [{"name": "ingredient", "dosage": "amount", "benefit": "benefit", "concern": "concern or null"}],
+"banned_substance_flags": [{"substance": "name", "reason": "why flagged"}],
+"usage_protocol": "recommended usage based on profile",
+"sources_used": ["list of sources referenced"]
 }`;
 
-    const userMessage = `Health Profile:\n${profileContext}\n\nExtracted Supplement Text:\n${extractedText}\n\nPlease analyze this supplement considering the user's fitness goals, health conditions, and dietary needs.`;
+  const userMessage =
+    'Analyse the supplement in <label_text> against the profile in <health_profile>. Judge its ingredients against the goals, conditions and medications listed there.';
 
-    const modelResponse = await generateText({
+  const modelResponse = await generateText({
+    userId: req.jwtUser!.id,
+    operation: 'scan.supplement',
+    systemPrompt,
+    userMessage,
+    untrusted: [
+      { label: 'health_profile', content: clampUntrusted(profileContext, 4000) },
+      { label: 'label_text', content: clampUntrusted(extractedText ?? '', 8000) },
+    ],
+    context: ragContext,
+  });
 
-      userId: req.jwtUser!.id,
+  const parsed = parseValidatedJson(modelResponse, supplementVerdictSchema, {
+    operation: 'scan.supplement',
+  });
 
-      operation: 'scan.supplement',
-      systemPrompt,
-      userMessage,
-      context: ragContext,
+  if (!parsed) {
+    throw new AppError({
+      status: 502,
+      code: 'MODEL_OUTPUT_INVALID',
+      message: 'The supplement analysis came back in a form we could not read.',
+      action: 'Try the scan again with a clearer photo of the ingredients panel.',
     });
-
-    const parsed = parseValidatedJson(modelResponse, supplementVerdictSchema, {
-      operation: 'scan.supplement',
-    });
-
-    if (!parsed) {
-      throw new AppError({
-        status: 502,
-        code: 'MODEL_OUTPUT_INVALID',
-        message: 'The supplement analysis came back in a form we could not read.',
-        action: 'Try the scan again with a clearer photo of the ingredients panel.',
-      });
-    }
-
-    const imageUrl = await uploadImageSafely(req.file);
-
-    await ScanHistory.create({
-      userId: req.jwtUser!.id,
-      profileId,
-      type: 'supplement',
-      imageUrl,
-      extractedText,
-      aiVerdict: parsed,
-      sourcesUsed: sources,
-      ragUsed: sources.length > 0,
-      ragSourceCount: sources.length,
-    });
-
-    res.json({ verdict: parsed, ragSources: ragSources.length > 0 ? ragSources : null });
-  } catch (error) {
-    res.status(500).json({ error: 'Supplement scan analysis failed. Please retry.' });
   }
-});
+
+  const imageUrl = await uploadImageSafely(req.file);
+
+  await ScanHistory.create({
+    userId: req.jwtUser!.id,
+    profileId,
+    type: 'supplement',
+    imageUrl,
+    extractedText,
+    aiVerdict: parsed,
+    sourcesUsed: sources,
+    ragUsed: sources.length > 0,
+    ragSourceCount: sources.length,
+  });
+
+  res.json({ verdict: parsed, ragSources: ragSources.length > 0 ? ragSources : null, grounded });
+}));
 
 router.get(
   '/history/:profileId',
   validate({ params: z.object({ profileId: objectId }), query: historyQuerySchema }),
-  async (req: Request, res: Response) => {
-  try {
+  asyncHandler(async (req: Request, res: Response) => {
     const { type, search, sort, page, limit } = req.query as unknown as z.infer<typeof historyQuerySchema>;
 
     const profile = await Profile.findOne({
@@ -478,50 +469,40 @@ router.get(
       page,
       totalPages: Math.ceil(total / limit),
     });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch scan history' });
+  }),
+);
+
+router.delete('/history/all/:profileId', validate({ params: z.object({ profileId: objectId }) }), asyncHandler(async (req: Request, res: Response) => {
+  const profile = await Profile.findOne({
+    _id: req.params.profileId,
+    userId: req.jwtUser!.id,
+  });
+  if (!profile) {
+    throw notFound('That profile');
   }
-});
 
-router.delete('/history/all/:profileId', validate({ params: z.object({ profileId: objectId }) }), async (req: Request, res: Response) => {
-  try {
-    const profile = await Profile.findOne({
-      _id: req.params.profileId,
-      userId: req.jwtUser!.id,
-    });
-    if (!profile) {
-      throw notFound('That profile');
-    }
+  const result = await ScanHistory.deleteMany({ profileId: req.params.profileId });
 
-    const result = await ScanHistory.deleteMany({ profileId: req.params.profileId });
+  res.json({ message: 'All scans deleted successfully', deletedCount: result.deletedCount });
+}));
 
-    res.json({ message: 'All scans deleted successfully', deletedCount: result.deletedCount });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to clear scan history' });
+router.delete('/history/:id', validate({ params: z.object({ id: objectId }) }), asyncHandler(async (req: Request, res: Response) => {
+  const scan = await ScanHistory.findById(req.params.id);
+  if (!scan) {
+    throw notFound('That scan');
   }
-});
 
-router.delete('/history/:id', validate({ params: z.object({ id: objectId }) }), async (req: Request, res: Response) => {
-  try {
-    const scan = await ScanHistory.findById(req.params.id);
-    if (!scan) {
-      throw notFound('That scan');
-    }
-
-    const profile = await Profile.findOne({
-      _id: scan.profileId,
-      userId: req.jwtUser!.id,
-    });
-    if (!profile) {
-      throw forbidden('That scan belongs to another profile.');
-    }
-
-    await ScanHistory.findByIdAndDelete(req.params.id);
-
-    res.json({ message: 'Scan deleted successfully' });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to delete scan' });
+  const profile = await Profile.findOne({
+    _id: scan.profileId,
+    userId: req.jwtUser!.id,
+  });
+  if (!profile) {
+    throw forbidden('That scan belongs to another profile.');
   }
-});
+
+  await ScanHistory.findByIdAndDelete(req.params.id);
+
+  res.json({ message: 'Scan deleted successfully' });
+}));
 
 export default router;

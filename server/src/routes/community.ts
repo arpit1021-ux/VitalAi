@@ -150,24 +150,39 @@ router.post('/', validate({ body: createPostSchema }), asyncHandler(async (req: 
 }));
 
 router.post('/:id/like', validate({ params: z.object({ id: objectId }) }), asyncHandler(async (req: Request, res: Response) => {
-  const post = await CommunityPost.findById(req.params.id);
-  if (!post) {
-    throw notFound('That post');
-  }
-
   const userId = new mongoose.Types.ObjectId(req.jwtUser!.id);
-  const index = post.likes.findIndex((id) => id.equals(userId));
-  const liking = index === -1;
 
-  if (liking) {
-    post.likes.push(userId);
-  } else {
-    post.likes.splice(index, 1);
+  // Reading the array, editing it and writing the whole thing back loses
+  // concurrent likes, and the field it corrupts is `likeCount` — the
+  // denormalised counter the trending sort reads. This is one atomic document
+  // update instead, and the filter on membership is what makes it idempotent:
+  // a double-tapped like cannot increment twice, because the second update
+  // matches nothing.
+  const liked = await CommunityPost.findOneAndUpdate(
+    { _id: req.params.id, likes: { $ne: userId } },
+    { $addToSet: { likes: userId }, $inc: { likeCount: 1 } },
+    { new: true, projection: { likeCount: 1 } },
+  );
+
+  if (liked) {
+    res.json({ likes: liked.likeCount, isLiked: true });
+    return;
   }
-  post.likeCount = post.likes.length;
-  await post.save();
 
-  res.json({ likes: post.likeCount, isLiked: liking });
+  const unliked = await CommunityPost.findOneAndUpdate(
+    { _id: req.params.id, likes: userId },
+    { $pull: { likes: userId }, $inc: { likeCount: -1 } },
+    { new: true, projection: { likeCount: 1 } },
+  );
+
+  if (unliked) {
+    res.json({ likes: unliked.likeCount, isLiked: false });
+    return;
+  }
+
+  // Neither branch matched, so the post itself is gone — the only explanation
+  // left once both "already liked" and "not yet liked" are ruled out.
+  throw notFound('That post');
 }));
 
 router.delete('/:id', validate({ params: z.object({ id: objectId }) }), asyncHandler(async (req: Request, res: Response) => {

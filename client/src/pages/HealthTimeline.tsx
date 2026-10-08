@@ -71,12 +71,12 @@ const formatTick = (v: string) =>
 
 export default function HealthTimeline() {
   const { activeProfile } = useProfileStore();
-  const [timeRange, setTimeRange] = useState('30');
+  const [timeRange, setTimeRange] = useState<'30' | '90'>('30');
 
   const timelineQuery = useQuery<Timeline>({
     queryKey: ['timeline', activeProfile?._id, timeRange],
     queryFn: () =>
-      dashboardExtended.getTimeline(activeProfile!._id).then((r) => r.data as Timeline),
+      dashboardExtended.getTimeline(activeProfile!._id, timeRange).then((r) => r.data as Timeline),
     enabled: !!activeProfile,
   });
 
@@ -96,7 +96,7 @@ export default function HealthTimeline() {
         transition={transition(durations.enter)}
         className="border-b border-line pb-4"
       >
-        <Tabs value={timeRange} onValueChange={setTimeRange}>
+        <Tabs value={timeRange} onValueChange={(value) => setTimeRange(value as '30' | '90')}>
           <TabsList className="h-auto bg-sunk p-1">
             <TabsTrigger value="30" className="min-h-[44px] rounded px-4">Last 30 days</TabsTrigger>
             <TabsTrigger value="90" className="min-h-[44px] rounded px-4">Last 90 days</TabsTrigger>

@@ -1,6 +1,7 @@
 import React from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { reportClientError } from '@/lib/reportError';
 
 interface Props {
   children: React.ReactNode;
@@ -19,7 +20,13 @@ export class ErrorBoundary extends React.Component<Props, State> {
   }
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    console.error('Render error caught by ErrorBoundary:', error, errorInfo);
+    // A render crash is the failure the user sees most and the one nothing was
+    // recording: it white-screens the app and never reaches the server logs.
+    reportClientError({
+      error,
+      kind: 'render',
+      componentStack: errorInfo.componentStack ?? undefined,
+    });
   }
 
   render() {

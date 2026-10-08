@@ -2,14 +2,14 @@ import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../middleware/auth.js';
 import { getRagContext } from '../services/retrieval.js';
+import { clampUntrusted } from '../services/promptSafety.js';
 import { generateText } from '../services/llm.js';
 import { parseJsonResponse } from '../utils/parseJsonResponse.js';
 import PantryItem from '../models/PantryItem.js';
 import Profile from '../models/Profile.js';
-import { logger } from '../utils/logger.js';
 import { objectId, validate } from '../middleware/validate.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
-import { forbidden, notFound } from '../utils/AppError.js';
+import { AppError, forbidden, notFound } from '../utils/AppError.js';
 
 const router = Router();
 
@@ -134,51 +134,50 @@ router.delete('/:id', validate({ params: z.object({ id: objectId }) }), asyncHan
   res.json({ message: 'Item deleted' });
 }));
 
-router.post('/recipes', validate({ body: recipeRequestSchema }), async (req: Request, res: Response) => {
-  try {
-    const { profileId, scope, selectedItemIds } = req.body as z.infer<typeof recipeRequestSchema>;
+router.post('/recipes', validate({ body: recipeRequestSchema }), asyncHandler(async (req: Request, res: Response) => {
+  const { profileId, scope, selectedItemIds } = req.body as z.infer<typeof recipeRequestSchema>;
 
-    const profile = await Profile.findOne({ _id: profileId, userId: req.jwtUser!.id });
-    if (!profile) {
-      throw notFound('That profile');
-    }
+  const profile = await Profile.findOne({ _id: profileId, userId: req.jwtUser!.id });
+  if (!profile) {
+    throw notFound('That profile');
+  }
 
-    const query: any = { profileId };
-    if (selectedItemIds && selectedItemIds.length > 0) {
-      query._id = { $in: selectedItemIds };
-    }
-    const items = await PantryItem.find(query);
-    const pantryList = items
-      .map((i) => `${i.name}${i.quantity ? ` (${i.quantity}${i.unit || ''})` : ''}`)
-      .join(', ');
+  const query: any = { profileId };
+  if (selectedItemIds && selectedItemIds.length > 0) {
+    query._id = { $in: selectedItemIds };
+  }
+  const items = await PantryItem.find(query);
+  const pantryList = items
+    .map((i) => `${i.name}${i.quantity ? ` (${i.quantity}${i.unit || ''})` : ''}`)
+    .join(', ');
 
-    let profileContext: string;
-    let scopeNote: string;
+  let profileContext: string;
+  let scopeNote: string;
 
-    if (scope === 'family') {
-      const allProfiles = await Profile.find({ userId: req.jwtUser!.id });
-      const profilesContext = allProfiles.map((p) => `
-        - ${p.name}: Diet: ${p.dietType || 'Not specified'}, Allergies: ${p.allergies?.join(', ') || 'None'}, Conditions: ${p.conditions?.join(', ') || 'None'}
-      `).join('');
+  if (scope === 'family') {
+    const allProfiles = await Profile.find({ userId: req.jwtUser!.id });
+    const profilesContext = allProfiles.map((p) => `
+      - ${p.name}: Diet: ${p.dietType || 'Not specified'}, Allergies: ${p.allergies?.join(', ') || 'None'}, Conditions: ${p.conditions?.join(', ') || 'None'}
+    `).join('');
 
-      profileContext = `Family Members:\n${profilesContext}`;
-      scopeNote = 'Generate a recipe safe for ALL family members. Use the most restrictive diet. Avoid ALL allergens listed for any family member.';
-    } else {
-      profileContext = `
-        Name: ${profile.name}
-        Diet Type: ${profile.dietType || 'Not specified'}
-        Allergies: ${profile.allergies?.join(', ') || 'None'}
-        Conditions: ${profile.conditions?.join(', ') || 'None'}
-        Fitness Goal: ${profile.fitnessGoal || 'Not specified'}
-      `;
-      scopeNote = `Generate a recipe tailored specifically for ${profile.name}.`;
-    }
+    profileContext = `Family Members:\n${profilesContext}`;
+    scopeNote = 'Generate a recipe safe for ALL family members. Use the most restrictive diet. Avoid ALL allergens listed for any family member.';
+  } else {
+    profileContext = `
+      Name: ${profile.name}
+      Diet Type: ${profile.dietType || 'Not specified'}
+      Allergies: ${profile.allergies?.join(', ') || 'None'}
+      Conditions: ${profile.conditions?.join(', ') || 'None'}
+      Fitness Goal: ${profile.fitnessGoal || 'Not specified'}
+    `;
+    scopeNote = `Generate a recipe tailored specifically for ${profile.name}.`;
+  }
 
-    const { context: ragContext, ragSources } = await getRagContext(
-      `recipes healthy cooking ${profile.dietType || ''} ${items.map(i => i.name).join(' ')}`
-    );
+  const { context: ragContext, ragSources, grounded } = await getRagContext(
+    `recipes healthy cooking ${profile.dietType || ''} ${items.map(i => i.name).join(' ')}`
+  );
 
-    const systemPrompt = `You are a health-conscious recipe assistant. Generate 1 detailed recipe based on the user's pantry items, dietary preferences, and health profile.
+  const systemPrompt = `You are a health-conscious recipe assistant. Generate 1 detailed recipe based on the user's pantry items, dietary preferences, and health profile.
 
 ${scopeNote}
 
@@ -192,51 +191,57 @@ Respond with ONLY the JSON object, no preamble, no explanation, no markdown fenc
 
 Return a JSON response with this exact structure:
 {
-  "recipes": [
-    {
-      "name": "recipe name",
-      "description": "brief description (1-2 sentences)",
-      "ingredients": ["ingredient with quantity"],
-      "instructions": ["step 1", "step 2", ...],
-      "health_benefits": "how this recipe aligns with health goals",
-      "preparation_time": "estimated time",
-      "serves": "number of servings",
-      "dietary_tags": ["tag1", "tag2"],
-      "missing_ingredients": ["ingredient needed but NOT in pantry"]
-    }
-  ]
+"recipes": [
+  {
+    "name": "recipe name",
+    "description": "brief description (1-2 sentences)",
+    "ingredients": ["ingredient with quantity"],
+    "instructions": ["step 1", "step 2", ...],
+    "health_benefits": "how this recipe aligns with health goals",
+    "preparation_time": "estimated time",
+    "serves": "number of servings",
+    "dietary_tags": ["tag1", "tag2"],
+    "missing_ingredients": ["ingredient needed but NOT in pantry"]
+  }
+]
 }
 
 IMPORTANT: The "missing_ingredients" field must list ONLY ingredients that are NOT already in the user's pantry. Compare against the provided pantry list carefully. If all ingredients are available, return an empty array.`;
 
-    const userMessage = `${profileContext}\n\nAvailable Pantry Items:\n${pantryList || 'No items in pantry'}\n\nPlease suggest 1 healthy recipe using the available ingredients. List any missing ingredients separately.`;
+  // Item names are free text the user typed, and the profile block may hold
+  // several family members' fields, so both are quoted as data.
+  const userMessage =
+    'Suggest 1 healthy recipe from the items in <pantry_items>, for the profile in <health_profile>. List anything else it needs separately.';
 
-    const modelResponse = await generateText({
+  const modelResponse = await generateText({
+    userId: req.jwtUser!.id,
+    operation: 'pantry.recipes',
+    maxOutputTokens: 2048,
+    systemPrompt,
+    userMessage,
+    untrusted: [
+      { label: 'health_profile', content: clampUntrusted(profileContext, 6000) },
+      { label: 'pantry_items', content: clampUntrusted(pantryList || 'No items in pantry', 4000) },
+    ],
+    context: ragContext,
+  });
 
-      userId: req.jwtUser!.id,
+  const parsed = parseJsonResponse<{ recipes: unknown[] }>(modelResponse, { recipes: [] });
+  const recipes = Array.isArray(parsed.recipes) ? parsed.recipes : [];
 
-      operation: 'pantry.recipes',
-
-        maxOutputTokens: 2048,
-      systemPrompt,
-      userMessage,
-      context: ragContext,
+  // An unreadable answer used to be reported as a successful empty list, which
+  // the client can only render as "no recipes" — an outage dressed up as a
+  // result. The parse failure is the truth, so it is what the user is told.
+  if (recipes.length === 0) {
+    throw new AppError({
+      status: 502,
+      code: 'MODEL_OUTPUT_INVALID',
+      message: 'The recipe suggestion came back in a form we could not read.',
+      action: 'Try again. Selecting a few specific pantry items often helps.',
     });
-
-    const parsed = parseJsonResponse<{ recipes: any[] }>(modelResponse, { recipes: [] });
-
-    res.json({ recipes: parsed.recipes || [], ragSources: ragSources.length > 0 ? ragSources : null });
-  } catch (error: any) {
-    logger.error('Pantry recipe generation failed', error);
-    const errMsg = String(error?.message || error || '');
-    if (errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED')) {
-      res.status(500).json({ error: 'AI service is busy. Please wait a moment and try again.' });
-    } else if (errMsg.includes('503') || errMsg.includes('UNAVAILABLE')) {
-      res.status(500).json({ error: 'AI service is temporarily unavailable. Please try again shortly.' });
-    } else {
-      res.status(500).json({ error: 'Recipe generation failed. Please try again.' });
-    }
   }
-});
+
+  res.json({ recipes, ragSources: ragSources.length > 0 ? ragSources : null, grounded });
+}));
 
 export default router;

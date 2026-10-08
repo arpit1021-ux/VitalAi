@@ -16,6 +16,7 @@ import { ErrorState } from '@/components/shared/ErrorState';
 import { describeError, type DescribedError } from '@/lib/errors';
 import { rise, stagger, transition, durations } from '@/lib/motion';
 import { cn } from '@/lib/utils';
+import { useObjectUrl } from '@/hooks/useObjectUrl';
 
 const OCR_UNREADABLE: DescribedError = {
   title: 'We could not read text from this image.',
@@ -62,7 +63,7 @@ function scoreVerdict(score: number): { key: Verdict; headline: string; meter: s
 export default function SupplementChecker() {
   const { activeProfile } = useProfileStore();
   const [extractedText, setExtractedText] = useState('');
-  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [imagePreview, setPreviewFile] = useObjectUrl();
   const [ocrLoading, setOcrLoading] = useState(false);
   const [ocrStatus, setOcrStatus] = useState('');
   const [ocrFraction, setOcrFraction] = useState<number | null>(null);
@@ -82,7 +83,7 @@ export default function SupplementChecker() {
   });
 
   const handleFileUpload = async (file: File) => {
-    setImagePreview(URL.createObjectURL(file));
+    setPreviewFile(file);
     setLastImageFile(file);
     setOcrLoading(true);
     setOcrFailure(null);
@@ -125,7 +126,7 @@ export default function SupplementChecker() {
 
   const resetAll = () => {
     setExtractedText('');
-    setImagePreview(null);
+    setPreviewFile(null);
     setLastImageFile(null);
     setScanFailure(null);
     setOcrFailure(null);
@@ -451,6 +452,7 @@ export default function SupplementChecker() {
           <CitationsBar
             sources={result.data?.verdict?.sources_used || []}
             ragSources={result.data?.ragSources}
+            grounded={result.data?.grounded}
           />
           <DisclaimerBanner />
 

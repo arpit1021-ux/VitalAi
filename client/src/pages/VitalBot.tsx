@@ -99,6 +99,7 @@ interface Message {
   content: string;
   sources?: string[];
   ragSources?: { source: string; topic?: string }[] | null;
+  grounded?: boolean;
 }
 
 interface ChatSessionSummary {
@@ -200,7 +201,15 @@ export default function VitalBot() {
       }
 
       const res = await chat.sendMessage(id, attempt.content, language, attempt.retryKey);
-      return { id, reply: res.data as { response: string; sources?: string[]; ragSources?: Message['ragSources'] } };
+      return {
+        id,
+        reply: res.data as {
+          response: string;
+          sources?: string[];
+          ragSources?: Message['ragSources'];
+          grounded?: boolean;
+        },
+      };
     },
     onSuccess: ({ id, reply }) => {
       appendMessage(id, {
@@ -208,6 +217,7 @@ export default function VitalBot() {
         content: reply.response,
         sources: reply.sources,
         ragSources: reply.ragSources,
+        grounded: reply.grounded,
       });
       setFailedAttempt(null);
       // The server titles a conversation from its first question.
@@ -454,7 +464,7 @@ export default function VitalBot() {
                         <ReactMarkdown components={markdownComponents}>{msg.content}</ReactMarkdown>
                       </div>
                       {msg.sources && msg.sources.length > 0 && (
-                        <CitationsBar sources={msg.sources} ragSources={msg.ragSources} />
+                        <CitationsBar sources={msg.sources} ragSources={msg.ragSources} grounded={msg.grounded} />
                       )}
                     </motion.article>
                   ),

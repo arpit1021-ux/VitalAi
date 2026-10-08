@@ -30,6 +30,7 @@ import { SectionIntro, hasSeenIntro } from '@/components/shared/SectionIntro';
 import { describeError, type DescribedError } from '@/lib/errors';
 import { rise, stagger, transition, durations } from '@/lib/motion';
 import { cn } from '@/lib/utils';
+import { useObjectUrl } from '@/hooks/useObjectUrl';
 
 interface ScanVerdict {
   verdict?: Verdict;
@@ -96,7 +97,7 @@ export default function FoodScanner() {
   const queryClient = useQueryClient();
   const [showIntro, setShowIntro] = useState(() => !hasSeenIntro('scanner'));
   const [extractedText, setExtractedText] = useState('');
-  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [imagePreview, setPreviewFile] = useObjectUrl();
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [inputMode, setInputMode] = useState<'text' | 'upload'>('text');
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -214,7 +215,7 @@ export default function FoodScanner() {
 
   const handleFileUpload = (file: File) => {
     setImageFile(file);
-    setImagePreview(URL.createObjectURL(file));
+    setPreviewFile(file);
   };
 
   const stopCamera = useCallback(() => {
@@ -264,7 +265,7 @@ export default function FoodScanner() {
 
   const resetAll = () => {
     setExtractedText('');
-    setImagePreview(null);
+    setPreviewFile(null);
     setImageFile(null);
     stopCamera();
     setCameraError(null);
@@ -452,7 +453,11 @@ export default function FoodScanner() {
         )}
 
         <motion.div variants={rise} transition={transition(durations.enter)} className="space-y-6">
-          <CitationsBar sources={v?.sources_used || []} ragSources={result.data?.ragSources} />
+          <CitationsBar
+            sources={v?.sources_used || []}
+            ragSources={result.data?.ragSources}
+            grounded={result.data?.grounded}
+          />
           <DisclaimerBanner />
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">

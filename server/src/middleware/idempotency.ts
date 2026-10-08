@@ -28,8 +28,9 @@ interface RecordedResponse {
 }
 
 function fingerprintOf(req: Request): string {
-  // Multipart bodies are not in req.body at this point, so the file is
-  // fingerprinted by its bytes where present.
+  // Routes that accept an upload mount this after multer, so the parsed body
+  // and the file are both available here; the file is fingerprinted by its
+  // bytes.
   const parts = [req.method, req.originalUrl, JSON.stringify(req.body ?? {})];
   if (req.file?.buffer) parts.push(createHash('sha256').update(req.file.buffer).digest('hex'));
 

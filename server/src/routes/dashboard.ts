@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Router, Request, Response } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { aiRateLimiter } from '../middleware/rateLimiter.js';
@@ -10,11 +11,13 @@ import PantryItem from '../models/PantryItem.js';
 import DailyLog from '../models/DailyLog.js';
 import { calculateHealthScore } from '../utils/healthScore.js';
 import { calculateProfileCompletion } from '../utils/profileCompletion.js';
-import { logger } from '../utils/logger.js';
 import { objectId, validate } from '../middleware/validate.js';
 import { z } from 'zod';
 import { asyncHandler } from '../utils/asyncHandler.js';
-import { badRequest, notFound } from '../utils/AppError.js';
+import { AppError, badRequest, notFound } from '../utils/AppError.js';
+import { currentStreak, shiftDay, todayKey } from '../utils/streak.js';
+import { cachedJson } from '../services/responseCache.js';
+import { clampUntrusted } from '../services/promptSafety.js';
 
 const moreRecipesSchema = z.object({
   excludeNames: z.array(z.string().trim().max(160)).max(50).default([]),
@@ -26,11 +29,12 @@ const expandRecipeSchema = z.object({
   recipeDescription: z.string().trim().max(1000).default(''),
 });
 
+/** Daily generations are cached for a calendar day's worth of seconds. */
+const DAY_SECONDS = 24 * 60 * 60;
+
 const router = Router();
 
 router.use(authenticate);
-
-const recipeCache = new Map<string, { recipes: any[]; timestamp: number }>();
 
 router.get('/recipes/:profileId', validate({ params: z.object({ profileId: objectId }) }), asyncHandler(async (req: Request, res: Response) => {
   const profile = await Profile.findOne({
@@ -41,13 +45,7 @@ router.get('/recipes/:profileId', validate({ params: z.object({ profileId: objec
     throw notFound('That profile');
   }
 
-  const today = new Date().toISOString().split('T')[0];
-  const cacheKey = `${profile._id}-${today}`;
-  const cached = recipeCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < 24 * 60 * 60 * 1000) {
-    res.json({ recipes: cached.recipes, cached: true });
-    return;
-  }
+  const today = todayKey();
 
   const profileContext = `
       Diet Type: ${profile.dietType || 'Not specified'}
@@ -83,32 +81,50 @@ Return a JSON response with this exact structure:
 
 Return exactly 5 recipes. Keep descriptions casual and helpful. Use emojis that represent each dish.`;
 
-  const userMessage = `Health Profile:\n${profileContext}\n\nPlease suggest 5 quick dinner ideas tailored to this person's dietary needs and preferences.`;
+  // Profile fields are text the user typed, so they are quoted as data rather
+  // than pasted into the instruction. Every AI call in the app does this the
+  // same way; the ones here were the last that did not.
+  const userMessage =
+    'Suggest 5 quick dinner ideas for the profile in <health_profile>, following its diet, allergies and conditions exactly.';
 
-  const modelResponse = await generateText({
-    userId: req.jwtUser!.id,
-    operation: 'dashboard.dinner_ideas',
-      maxOutputTokens: 1536,
-    systemPrompt,
-    userMessage,
-  });
+  // Identical for a profile for the whole day, so it is generated once and
+  // served from the shared store after that — the single biggest saving
+  // available on the AI bill.
+  const { value: recipes, cached } = await cachedJson(
+    `dashboard:dinner:${profile._id}:${today}`,
+    DAY_SECONDS,
+    async () => {
+      const modelResponse = await generateText({
+        userId: req.jwtUser!.id,
+        operation: 'dashboard.dinner_ideas',
+        maxOutputTokens: 1536,
+        systemPrompt,
+        userMessage,
+        untrusted: [{ label: 'health_profile', content: clampUntrusted(profileContext, 4000) }],
+      });
 
-  const parsed = parseJsonResponse<{ recipes: unknown[] }>(modelResponse, { recipes: [] });
-  let recipes = (parsed.recipes || []).slice(0, 5);
+      const parsed = parseJsonResponse<{ recipes: unknown[] }>(modelResponse, { recipes: [] });
+      const suggestions = (parsed.recipes || []).slice(0, 5);
 
-  if (recipes.length === 0) {
-    recipes = [
-      { name: 'Moong dal khichdi', description: 'With ghee and roasted vegetables. Easy on digestion.', emoji: '🍲', prepTime: '25 min' },
-      { name: 'Vegetable stir-fry', description: 'Quick stir-fried veggies with soy sauce and sesame. Serve with rice.', emoji: '🥦', prepTime: '15 min' },
-      { name: 'Egg fried rice', description: 'Leftover rice tossed with eggs, peas, and soy sauce. Quick comfort food.', emoji: '🍳', prepTime: '10 min' },
-      { name: 'Paneer tikka', description: 'Marinated paneer grilled with bell peppers and onions. Smoky flavor.', emoji: '🧀', prepTime: '20 min' },
-      { name: 'Dal tadka', description: 'Yellow lentils tempered with cumin, garlic, and ghee. Classic comfort.', emoji: '🫘', prepTime: '30 min' },
-    ];
-  }
+      // There used to be a hardcoded list here for when the answer could not be
+      // parsed. It had to go: the substitutes included egg fried rice and
+      // paneer tikka, which would be served to a vegan or a Jain profile — a
+      // set of dietary rules the prompt above states explicitly. A visible
+      // failure is better than a confidently wrong suggestion.
+      if (suggestions.length === 0) {
+        throw new AppError({
+          status: 502,
+          code: 'MODEL_OUTPUT_INVALID',
+          message: "Tonight's ideas came back in a form we could not read.",
+          action: 'Try again in a moment — nothing else on this page is affected.',
+        });
+      }
 
-  recipeCache.set(cacheKey, { recipes, timestamp: Date.now() });
+      return suggestions;
+    },
+  );
 
-  res.json({ recipes, cached: false });
+  res.json({ recipes, cached });
 }));
 
 router.post('/recipes/:profileId/more', validate({ params: z.object({ profileId: objectId }), body: moreRecipesSchema }), asyncHandler(async (req: Request, res: Response) => {
@@ -145,11 +161,12 @@ Respond with ONLY the JSON object, no preamble, no explanation, no markdown fenc
 Return JSON: { "recipes": [{ "name": "...", "description": "...", "emoji": "...", "prepTime": "..." }] }
 Return exactly 5 recipes.`;
 
-  const userMessage = `Health Profile:\n${profileContext}\n\nPlease suggest 5 more dinner ideas.`;
+  const userMessage = 'Suggest 5 more dinner ideas for the profile in <health_profile>.';
 
   const modelResponse = await generateText({
     userId: req.jwtUser!.id,
     operation: 'dashboard.more_recipes',
+    untrusted: [{ label: 'health_profile', content: clampUntrusted(profileContext, 4000) }],
       maxOutputTokens: 1536,
 
       systemPrompt,
@@ -164,36 +181,35 @@ Return exactly 5 recipes.`;
   res.json({ recipes });
 }));
 
-router.post('/recipes/expand', aiRateLimiter, validate({ body: expandRecipeSchema }), async (req: Request, res: Response) => {
-  try {
-    const { profileId, recipeName, recipeDescription } = req.body as z.infer<typeof expandRecipeSchema>;
+router.post('/recipes/expand', aiRateLimiter, validate({ body: expandRecipeSchema }), asyncHandler(async (req: Request, res: Response) => {
+  const { profileId, recipeName, recipeDescription } = req.body as z.infer<typeof expandRecipeSchema>;
 
-    if (!profileId || !recipeName) {
-      throw badRequest('This request was missing the profile or the recipe name.', 'Go back to the recipe and open it again.');
-    }
+  if (!profileId || !recipeName) {
+    throw badRequest('This request was missing the profile or the recipe name.', 'Go back to the recipe and open it again.');
+  }
 
-    const profile = await Profile.findOne({
-      _id: profileId,
-      userId: req.jwtUser!.id,
-    });
-    if (!profile) {
-      throw notFound('That profile');
-    }
+  const profile = await Profile.findOne({
+    _id: profileId,
+    userId: req.jwtUser!.id,
+  });
+  if (!profile) {
+    throw notFound('That profile');
+  }
 
-    const profileContext = `
-      Name: ${profile.name}
-      Diet Type: ${profile.dietType || 'Not specified'}
-      Allergies: ${profile.allergies?.join(', ') || 'None'}
-      Conditions: ${profile.conditions?.join(', ') || 'None'}
-      Fitness Goal: ${profile.fitnessGoal || 'Not specified'}
-      Activity Level: ${profile.activityLevel || 'Not specified'}
-    `;
+  const profileContext = `
+    Name: ${profile.name}
+    Diet Type: ${profile.dietType || 'Not specified'}
+    Allergies: ${profile.allergies?.join(', ') || 'None'}
+    Conditions: ${profile.conditions?.join(', ') || 'None'}
+    Fitness Goal: ${profile.fitnessGoal || 'Not specified'}
+    Activity Level: ${profile.activityLevel || 'Not specified'}
+  `;
 
-    const { context: ragContext, ragSources } = await getRagContext(
-      `recipes healthy cooking ${recipeName} ${profile.dietType || ''} ${profile.allergies?.join(' ') || ''}`
-    );
+  const { context: ragContext, ragSources, grounded } = await getRagContext(
+    `recipes healthy cooking ${recipeName} ${profile.dietType || ''} ${profile.allergies?.join(' ') || ''}`
+  );
 
-    const systemPrompt = `You are a health-conscious recipe assistant. Expand this dinner idea into a full, detailed recipe tailored to the user's dietary preferences and health profile.
+  const systemPrompt = `You are a health-conscious recipe assistant. Expand this dinner idea into a full, detailed recipe tailored to the user's dietary preferences and health profile.
 
 CRITICAL DIETARY RULES:
 - If diet is "vegetarian": NO meat, NO seafood, NO eggs.
@@ -206,61 +222,65 @@ Respond with ONLY the JSON object, no preamble, no explanation, no markdown fenc
 
 Return a JSON response with this exact structure:
 {
-  "name": "recipe name",
-  "description": "brief description (1-2 sentences)",
-  "ingredients": ["ingredient with quantity"],
-  "instructions": ["step 1", "step 2", ...],
-  "health_benefits": "how this recipe aligns with health goals",
-  "preparation_time": "estimated time",
-  "serves": "number of servings",
-  "dietary_tags": ["tag1", "tag2"],
-  "nutrition": {
-    "calories": "number",
-    "protein": "number",
-    "carbs": "number",
-    "fat": "number"
-  }
+"name": "recipe name",
+"description": "brief description (1-2 sentences)",
+"ingredients": ["ingredient with quantity"],
+"instructions": ["step 1", "step 2", ...],
+"health_benefits": "how this recipe aligns with health goals",
+"preparation_time": "estimated time",
+"serves": "number of servings",
+"dietary_tags": ["tag1", "tag2"],
+"nutrition": {
+  "calories": "number",
+  "protein": "number",
+  "carbs": "number",
+  "fat": "number"
+}
 }`;
 
-    const userMessage = `Health Profile:\n${profileContext}\n\nDinner Idea:\nName: ${recipeName}\nDescription: ${recipeDescription || 'No description provided'}\n\nPlease expand this into a full, detailed recipe with ingredients, instructions, and nutritional information.`;
+  const userMessage =
+    'Expand the dinner idea in <dinner_idea> into a full recipe for the profile in <health_profile>, with ingredients, instructions and nutrition.';
 
-    const modelResponse = await generateText({
-      userId: req.jwtUser!.id,
-      operation: 'dashboard.recipe_expand',
-        maxOutputTokens: 1536,
-      systemPrompt,
-      userMessage,
-      context: ragContext,
-    });
+  const modelResponse = await generateText({
+    userId: req.jwtUser!.id,
+    operation: 'dashboard.recipe_expand',
+    maxOutputTokens: 1536,
+    untrusted: [
+      { label: 'health_profile', content: clampUntrusted(profileContext, 4000) },
+      {
+        label: 'dinner_idea',
+        content: clampUntrusted(`${recipeName}\n${recipeDescription || ''}`, 1000),
+      },
+    ],
+    systemPrompt,
+    userMessage,
+    context: ragContext,
+  });
 
-    const parsed = parseJsonResponse<{
-      name: string;
-      description: string;
-      ingredients: string[];
-      instructions: string[];
-      health_benefits: string;
-      preparation_time: string;
-      serves: string;
-      dietary_tags: string[];
-      nutrition: { calories: string; protein: string; carbs: string; fat: string };
-    }>(modelResponse, {
-      name: recipeName,
-      description: recipeDescription || '',
-      ingredients: [],
-      instructions: [],
-      health_benefits: '',
-      preparation_time: '',
-      serves: '',
-      dietary_tags: [],
-      nutrition: { calories: '', protein: '', carbs: '', fat: '' },
-    });
+  const parsed = parseJsonResponse<{
+    name: string;
+    description: string;
+    ingredients: string[];
+    instructions: string[];
+    health_benefits: string;
+    preparation_time: string;
+    serves: string;
+    dietary_tags: string[];
+    nutrition: { calories: string; protein: string; carbs: string; fat: string };
+  }>(modelResponse, {
+    name: recipeName,
+    description: recipeDescription || '',
+    ingredients: [],
+    instructions: [],
+    health_benefits: '',
+    preparation_time: '',
+    serves: '',
+    dietary_tags: [],
+    nutrition: { calories: '', protein: '', carbs: '', fat: '' },
+  });
 
-    res.json({ recipe: parsed, ragSources: ragSources.length > 0 ? ragSources : null });
-  } catch (error) {
-    logger.error('Recipe expansion failed', error);
-    res.status(500).json({ error: 'Failed to expand recipe. Please retry.' });
-  }
-});
+  res.json({ recipe: parsed, ragSources: ragSources.length > 0 ? ragSources : null, grounded });
+}));
 
 router.get('/:profileId', validate({ params: z.object({ profileId: objectId }) }), asyncHandler(async (req: Request, res: Response) => {
   const profile = await Profile.findOne({
@@ -298,26 +318,17 @@ router.get('/:profileId', validate({ params: z.object({ profileId: objectId }) }
     createdAt: { $gte: sevenDaysAgo },
   });
 
-  const today = new Date().toISOString().split('T')[0];
+  const today = todayKey();
   const recentLogs = await DailyLog.find({
     profileId: profile._id,
   })
     .sort({ date: -1 })
     .limit(30);
 
-  let waterStreak = 0;
-  const checkDate = new Date(today + 'T00:00:00Z');
-  for (const log of recentLogs) {
-    const expected = checkDate.toISOString().split('T')[0];
-    if (log.date === expected && log.waterCount >= (log.waterGoal || 8)) {
-      waterStreak++;
-      checkDate.setDate(checkDate.getDate() - 1);
-    } else if (log.date === expected) {
-      break;
-    } else {
-      break;
-    }
-  }
+  const waterStreak = currentStreak(
+    recentLogs.filter((log) => log.waterCount >= (log.waterGoal || 8)).map((log) => log.date),
+    today,
+  );
 
   const todayLog = await DailyLog.findOne({ profileId: profile._id, date: today });
 
@@ -326,7 +337,6 @@ router.get('/:profileId', validate({ params: z.object({ profileId: objectId }) }
     createdAt: { $gte: sevenDaysAgo },
   }).sort({ createdAt: -1 });
 
-  let streak = 0;
   const streakLogs = await DailyLog.find({
     profileId: profile._id,
     streakDay: true,
@@ -334,19 +344,7 @@ router.get('/:profileId', validate({ params: z.object({ profileId: objectId }) }
     .sort({ date: -1 })
     .lean();
 
-  if (streakLogs.length > 0) {
-    const dates = streakLogs.map((l) => l.date);
-    const streakCheckDate = new Date(today + 'T00:00:00Z');
-    for (const dateStr of dates) {
-      const expected = streakCheckDate.toISOString().split('T')[0];
-      if (dateStr === expected) {
-        streak++;
-        streakCheckDate.setDate(streakCheckDate.getDate() - 1);
-      } else {
-        break;
-      }
-    }
-  }
+  const streak = currentStreak(streakLogs.map((log) => log.date), today);
 
   const healthScoreResult = calculateHealthScore({
     profile,
@@ -426,8 +424,6 @@ router.get('/:profileId', validate({ params: z.object({ profileId: objectId }) }
   });
 }));
 
-const tipCache = new Map<string, { tip: string; date: string }>();
-
 router.get('/tip/:profileId', validate({ params: z.object({ profileId: objectId }) }), asyncHandler(async (req: Request, res: Response) => {
   const profile = await Profile.findOne({
     _id: req.params.profileId,
@@ -437,14 +433,7 @@ router.get('/tip/:profileId', validate({ params: z.object({ profileId: objectId 
     throw notFound('That profile');
   }
 
-  const today = new Date().toISOString().split('T')[0];
-  const cacheKey = `${profile._id}-${today}`;
-
-  const cached = tipCache.get(cacheKey);
-  if (cached) {
-    res.json({ tip: cached.tip, cached: true });
-    return;
-  }
+  const today = todayKey();
 
   const profileContext = `
       Diet Type: ${profile.dietType || 'Not specified'}
@@ -468,64 +457,96 @@ Return a JSON response with this exact structure:
   "importance": "high|medium|low"
 }`;
 
-  const userMessage = `Health Profile:\n${profileContext}\n\nPlease provide a personalized daily health tip.`;
+  const userMessage = 'Give one health tip for the profile in <health_profile>.';
 
-  const modelResponse = await generateText({
-    userId: req.jwtUser!.id,
-    operation: 'dashboard.daily_tip',
-      maxOutputTokens: 1536,
-    systemPrompt,
-    userMessage,
-    context: ragContext,
-  });
+  const { value: tip, cached } = await cachedJson(
+    `dashboard:tip:${profile._id}:${today}`,
+    DAY_SECONDS,
+    async () => {
+      const modelResponse = await generateText({
+        userId: req.jwtUser!.id,
+        operation: 'dashboard.daily_tip',
+        maxOutputTokens: 1536,
+        systemPrompt,
+        userMessage,
+        untrusted: [{ label: 'health_profile', content: clampUntrusted(profileContext, 4000) }],
+        context: ragContext,
+      });
 
-  const parsed = parseJsonResponse<{ tip: string }>(modelResponse, { tip: modelResponse });
-  const tip = parsed.tip || modelResponse;
+      const parsed = parseJsonResponse<{ tip: string }>(modelResponse, { tip: '' });
+      const generated = (parsed.tip || '').trim();
 
-  tipCache.set(cacheKey, { tip, date: today });
+      // The old fallback was the raw model response, which meant an unparsed
+      // answer — a stray JSON fragment, or a refusal — was shown to the user as
+      // today's health tip.
+      if (!generated) {
+        throw new AppError({
+          status: 502,
+          code: 'MODEL_OUTPUT_INVALID',
+          message: "Today's tip came back in a form we could not read.",
+          action: 'Try again in a moment — nothing else on this page is affected.',
+        });
+      }
 
-  res.json({ tip, cached: false });
+      return generated;
+    },
+  );
+
+  res.json({ tip, cached });
 }));
 
-router.get('/timeline/:profileId', validate({ params: z.object({ profileId: objectId }) }), asyncHandler(async (req: Request, res: Response) => {
-  const profile = await Profile.findOne({
-    _id: req.params.profileId,
-    userId: req.jwtUser!.id,
-  });
-  if (!profile) {
-    throw notFound('That profile');
-  }
+/**
+ * The window is a closed set rather than a free number: it is the bound on how
+ * much a single request can read, so it is not something the caller gets to
+ * choose arbitrarily. The screen offered 30 and 90 days and the server only
+ * ever answered with 30 — the choice never reached the request at all.
+ */
+const timelineQuerySchema = z.object({
+  days: z.enum(['7', '30', '90']).default('30'),
+});
 
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-  const logs = await DailyLog.find({
-    profileId: profile._id,
-    date: { $gte: thirtyDaysAgo.toISOString().split('T')[0] },
-  }).sort({ date: 1 });
+router.get(
+  '/timeline/:profileId',
+  validate({ params: z.object({ profileId: objectId }), query: timelineQuerySchema }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const profile = await Profile.findOne({
+      _id: req.params.profileId,
+      userId: req.jwtUser!.id,
+    });
+    if (!profile) {
+      throw notFound('That profile');
+    }
 
-  const days = logs.map((log) => {
-    const plateTrueCount = [
-      log.plateGroups.veg,
-      log.plateGroups.fruit,
-      log.plateGroups.protein,
-      log.plateGroups.grains,
-      log.plateGroups.dairy,
-    ].filter(Boolean).length;
-    const plateScore = Math.round((plateTrueCount / 5) * 100);
+    const { days: windowDays } = req.query as unknown as z.infer<typeof timelineQuerySchema>;
+    const since = shiftDay(todayKey(), -(Number(windowDays) - 1));
+    const logs = await DailyLog.find({
+      profileId: profile._id,
+      date: { $gte: since },
+    }).sort({ date: 1 });
 
-    return {
-      date: log.date,
-      waterCount: log.waterCount,
-      waterGoal: log.waterGoal || 8,
-      plateScore,
-      challengeCompleted: log.challenge?.completed || false,
-      streakDay: log.streakDay,
-    };
-  });
+    const days = logs.map((log) => {
+      const plateTrueCount = [
+        log.plateGroups.veg,
+        log.plateGroups.fruit,
+        log.plateGroups.protein,
+        log.plateGroups.grains,
+        log.plateGroups.dairy,
+      ].filter(Boolean).length;
+      const plateScore = Math.round((plateTrueCount / 5) * 100);
 
-  res.json({ days });
-}));
+      return {
+        date: log.date,
+        waterCount: log.waterCount,
+        waterGoal: log.waterGoal || 8,
+        plateScore,
+        challengeCompleted: log.challenge?.completed || false,
+        streakDay: log.streakDay,
+      };
+    });
 
-const coachCache = new Map<string, { data: any; timestamp: number }>();
+    res.json({ days });
+  }),
+);
 
 router.get('/coach/:profileId', validate({ params: z.object({ profileId: objectId }) }), asyncHandler(async (req: Request, res: Response) => {
   const profile = await Profile.findOne({
@@ -536,14 +557,7 @@ router.get('/coach/:profileId', validate({ params: z.object({ profileId: objectI
     throw notFound('That profile');
   }
 
-  const cacheKey = `${profile._id}`;
-  const cached = coachCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < 4 * 60 * 60 * 1000) {
-    res.json({ ...cached.data, cached: true });
-    return;
-  }
-
-  const today = new Date().toISOString().split('T')[0];
+  const today = todayKey();
   const todayLog = await DailyLog.findOne({ profileId: profile._id, date: today });
 
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
@@ -556,7 +570,6 @@ router.get('/coach/:profileId', validate({ params: z.object({ profileId: objectI
     .sort({ createdAt: -1 })
     .limit(10);
 
-  let streak = 0;
   const streakLogs = await DailyLog.find({
     profileId: profile._id,
     streakDay: true,
@@ -564,19 +577,7 @@ router.get('/coach/:profileId', validate({ params: z.object({ profileId: objectI
     .sort({ date: -1 })
     .lean();
 
-  if (streakLogs.length > 0) {
-    const dates = streakLogs.map((l) => l.date);
-    const checkDate = new Date(today + 'T00:00:00Z');
-    for (const dateStr of dates) {
-      const expected = checkDate.toISOString().split('T')[0];
-      if (dateStr === expected) {
-        streak++;
-        checkDate.setDate(checkDate.getDate() - 1);
-      } else {
-        break;
-      }
-    }
-  }
+  const streak = currentStreak(streakLogs.map((log) => log.date), today);
 
   const healthScoreResult = calculateHealthScore({
     profile,
@@ -620,29 +621,65 @@ Return a JSON response with this exact structure:
   "priority": "high|medium|low"
 }`;
 
-  const userMessage = `Health Profile:\n${profileContext}\n\nToday's Log:\n${todayContext}\n\nLast 7 Days:\n${weekContext || 'No data'}\n\nRecent Scans:\n${scansContext || 'No scans'}\n\nCurrent Streak: ${streak} days\nHealth Score: ${healthScoreResult.score}/100\n\nPlease provide a personalized coaching message.`;
+  const userMessage = [
+    'Write one coaching message for the profile in <health_profile>, using the logs in <today_log> and <recent_week> and the scans in <recent_scans>.',
+    `Their current streak is ${streak} days and their health score is ${healthScoreResult.score}/100.`,
+  ].join(' ');
 
-  const modelResponse = await generateText({
-    userId: req.jwtUser!.id,
-    operation: 'dashboard.coach',
-      maxOutputTokens: 1536,
-    systemPrompt,
-    userMessage,
-  });
+  // Keyed on the day and on a digest of everything the message is drawn from,
+  // so logging a glass of water or finishing a scan invalidates it. The old
+  // cache was keyed on the profile alone for four hours, which meant the coach
+  // congratulated you on a streak you had since broken.
+  const inputDigest = createHash('sha256')
+    .update([profileContext, todayContext, weekContext, scansContext, String(streak)].join('|'))
+    .digest('hex')
+    .slice(0, 16);
 
-  const parsed = parseJsonResponse<{ message: string; category: string; priority: string }>(
-    modelResponse,
-    { message: modelResponse, category: 'general', priority: 'medium' }
+  const { value: result, cached } = await cachedJson(
+    `dashboard:coach:${profile._id}:${today}:${inputDigest}`,
+    4 * 60 * 60,
+    async () => {
+      const modelResponse = await generateText({
+        userId: req.jwtUser!.id,
+        operation: 'dashboard.coach',
+        maxOutputTokens: 1536,
+        systemPrompt,
+        userMessage,
+        untrusted: [
+          { label: 'health_profile', content: clampUntrusted(profileContext, 4000) },
+          { label: 'today_log', content: clampUntrusted(todayContext, 1000) },
+          { label: 'recent_week', content: clampUntrusted(weekContext || 'No data', 2000) },
+          { label: 'recent_scans', content: clampUntrusted(scansContext || 'No scans', 2000) },
+        ],
+      });
+
+      const parsed = parseJsonResponse<{ message: string; category: string; priority: string }>(
+        modelResponse,
+        { message: '', category: 'general', priority: 'medium' },
+      );
+
+      const message = (parsed.message || '').trim();
+
+      // Falling back to the raw response put unparsed model output — or a
+      // refusal — on the dashboard as coaching.
+      if (!message) {
+        throw new AppError({
+          status: 502,
+          code: 'MODEL_OUTPUT_INVALID',
+          message: 'The coaching note came back in a form we could not read.',
+          action: 'Try again in a moment — nothing else on this page is affected.',
+        });
+      }
+
+      return {
+        message,
+        category: parsed.category || 'general',
+        priority: parsed.priority || 'medium',
+      };
+    },
   );
-  const result = {
-    message: parsed.message || modelResponse,
-    category: parsed.category || 'general',
-    priority: parsed.priority || 'medium',
-  };
 
-  coachCache.set(cacheKey, { data: result, timestamp: Date.now() });
-
-  res.json({ ...result, cached: false });
+  res.json({ ...result, cached });
 }));
 
 export default router;

@@ -133,10 +133,20 @@ In this order — each one catches a different class of problem:
 
 ## 8. Before calling it public
 
-- Client-side error reporting (Sentry is server-only today).
-- Uptime monitoring on `/health/ready`. Render's free tier sleeps after
-  inactivity, so the first request after idle takes ~30s — either accept it or
+- **Uptime monitoring on `/health/ready`** with a real alert. This is the top of
+  the list: both server exceptions and browser crashes now reach Sentry, but
+  nothing pages anyone. Note also that Render's free tier sleeps after
+  inactivity, so the first request after idle takes ~30s — either accept that or
   move to a paid instance before putting the link on a CV.
-- Redis response caching — the largest cost lever in the model.
+- An alert when the AI spend ceiling is approached, rather than finding out
+  because the app degraded.
+- Log aggregation. Correlation IDs are only as useful as the place you search
+  them.
 - Confirm `POST /auth/register` for an already-registered address does not
-  reveal that the account exists.
+  reveal that the account exists. (Still open — it does.)
+
+Already done, so do not re-plan them: client-side error reporting posts to
+`POST /api/telemetry/client-error`, which validates, logs and forwards to the
+same Sentry as the server — no reporting key in the browser and nothing added to
+the bundle. Response caching for the dashboard's daily generations is in the
+shared store.

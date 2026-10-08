@@ -63,6 +63,28 @@ function flushQueue(error: unknown): void {
 }
 
 /**
+ * Serialises refreshes across tabs.
+ *
+ * The in-process gate below only covers one JavaScript context, and cookies
+ * are shared by every tab on the origin. Two tabs waking at the same moment
+ * would each present the same refresh token, and the second one looks exactly
+ * like a stolen token being replayed — so the server revokes the whole family
+ * and ordinary behaviour signs the user out everywhere.
+ *
+ * Holding a named lock means the second tab runs after the first has finished,
+ * by which point the rotated cookie is already in place and its refresh uses
+ * the new token. Where the Web Locks API is missing the call still works; it
+ * just falls back to per-tab coordination.
+ */
+const REFRESH_LOCK = 'vitalai:auth-refresh';
+
+function withRefreshLock<T>(run: () => Promise<T>): Promise<T> {
+  const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
+  if (!locks) return run();
+  return locks.request(REFRESH_LOCK, run) as Promise<T>;
+}
+
+/**
  * Refreshes once for however many requests fail concurrently.
  *
  * A dashboard can have nine requests in flight when the access token expires.
@@ -72,8 +94,7 @@ function flushQueue(error: unknown): void {
  * signing the user out of every device.
  */
 function refreshSession(): Promise<void> {
-  refreshInFlight ??= api
-    .post('/auth/refresh')
+  refreshInFlight ??= withRefreshLock(() => api.post('/auth/refresh'))
     .then(() => {
       flushQueue(null);
     })
@@ -262,7 +283,8 @@ export const dailylog = {
 };
 
 export const dashboardExtended = {
-  getTimeline: (profileId: string) => api.get(`/dashboard/timeline/${profileId}`),
+  getTimeline: (profileId: string, days: '7' | '30' | '90' = '30') =>
+    api.get(`/dashboard/timeline/${profileId}?days=${days}`),
   getCoach: (profileId: string) => api.get(`/dashboard/coach/${profileId}`),
   getRecipes: (profileId: string) => api.get(`/dashboard/recipes/${profileId}`),
   getMoreRecipes: (profileId: string, excludeNames: string[]) =>

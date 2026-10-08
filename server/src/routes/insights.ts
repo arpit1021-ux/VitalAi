@@ -9,6 +9,7 @@ import { objectId, validate } from '../middleware/validate.js';
 import { z } from 'zod';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { badRequest, forbidden } from '../utils/AppError.js';
+import { clampUntrusted } from '../services/promptSafety.js';
 
 const router = Router();
 
@@ -83,13 +84,24 @@ Return a JSON response with this exact structure:
   "grocery_suggestions": ["suggested grocery items for better nutrition"]
 }`;
 
-  const userMessage = `Family Profiles:\n${JSON.stringify(profilesData, null, 2)}\n\nRecent Health Scans:\n${JSON.stringify(scansSummary, null, 2)}\n\nPlease generate comprehensive family health insights.`;
+  const userMessage =
+    'Generate family health insights from the profiles in <family_profiles> and the scans in <recent_scans>.';
 
   const modelResponse = await generateText({
 
     userId: req.jwtUser!.id,
 
     operation: 'family_insights.refresh',
+    untrusted: [
+      {
+        label: 'family_profiles',
+        content: clampUntrusted(JSON.stringify(profilesData, null, 2), 8000),
+      },
+      {
+        label: 'recent_scans',
+        content: clampUntrusted(JSON.stringify(scansSummary, null, 2), 8000),
+      },
+    ],
 
       maxOutputTokens: 2048,
     systemPrompt,

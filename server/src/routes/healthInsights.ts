@@ -10,17 +10,15 @@ import { objectId, validate } from '../middleware/validate.js';
 import { z } from 'zod';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { notFound } from '../utils/AppError.js';
+import { weekStart } from '../utils/streak.js';
+import { clampUntrusted } from '../services/promptSafety.js';
 
 const router = Router();
 
 router.use(authenticate);
 
 function getWeekOf(date: Date): string {
-  const d = new Date(date);
-  const day = d.getDay();
-  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-  d.setDate(diff);
-  return d.toISOString().split('T')[0];
+  return weekStart(date.toISOString().slice(0, 10));
 }
 
 router.get('/:profileId', validate({ params: z.object({ profileId: objectId }) }), asyncHandler(async (req: Request, res: Response) => {
@@ -104,13 +102,19 @@ Return a JSON response with this exact structure:
   "insights": ["insight 1", "insight 2", "insight 3", ...]
 }`;
 
-  const userMessage = `Health Profile:\n${profileContext}\n\nRecent Daily Logs (last 7 days):\n${logsContext || 'No logs available'}\n\nRecent Scans:\n${scansContext || 'No scans available'}\n\nPlease analyze this data and provide personalized health insights.`;
+  const userMessage =
+    'Analyse the profile in <health_profile> together with the logs in <recent_week> and the scans in <recent_scans>, and give personalised insights.';
 
   const modelResponse = await generateText({
 
     userId: req.jwtUser!.id,
 
     operation: 'health_insights.generate',
+    untrusted: [
+      { label: 'health_profile', content: clampUntrusted(profileContext, 4000) },
+      { label: 'recent_week', content: clampUntrusted(logsContext || 'No logs available', 3000) },
+      { label: 'recent_scans', content: clampUntrusted(scansContext || 'No scans available', 3000) },
+    ],
 
       maxOutputTokens: 1024,
     systemPrompt,

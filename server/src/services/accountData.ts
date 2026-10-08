@@ -50,7 +50,50 @@ const OWNED_VIA_PROFILE: OwnedCollection[] = [
   { name: 'pantryItems', model: PantryItem },
   { name: 'savedRecipes', model: SavedRecipe },
   { name: 'healthInsights', model: HealthInsight },
+  // Posts carry both a userId and the profile that authored them. Erasing an
+  // account sweeps them by userId as well, which is deliberate: that also
+  // catches a post whose profile was removed before this cascade existed.
+  { name: 'communityPosts', model: CommunityPost },
 ];
+
+/**
+ * Removes every record hanging off a set of profiles.
+ *
+ * Both deletion paths call this. Deleting one profile and deleting a whole
+ * account are the same problem at different scopes, and when they were written
+ * separately the single-profile path simply did not do it — scans, pantry
+ * items, chat sessions, logs and recipes survived their owner, and the account
+ * erasure could not reach them afterwards because it enumerates the profiles
+ * that still exist.
+ */
+async function deleteProfileScopedData(
+  profileIds: mongoose.Types.ObjectId[],
+  deleted: Record<string, number>,
+  session?: mongoose.ClientSession,
+): Promise<void> {
+  if (profileIds.length === 0) return;
+
+  const options = session ? { session } : {};
+
+  for (const { name, model } of OWNED_VIA_PROFILE) {
+    const result = await model.deleteMany({ profileId: { $in: profileIds } }, options);
+    deleted[name] = (deleted[name] ?? 0) + (result.deletedCount ?? 0);
+  }
+}
+
+/** Scan image URLs for a set of profiles, so the storage copies go too. */
+async function scanImageUrls(profileIds: mongoose.Types.ObjectId[]): Promise<string[]> {
+  if (profileIds.length === 0) return [];
+
+  const scans = await ScanHistory.find(
+    { profileId: { $in: profileIds }, imageUrl: { $exists: true, $ne: null } },
+    { imageUrl: 1 },
+  ).lean();
+
+  return scans
+    .map((scan) => scan.imageUrl)
+    .filter((url): url is string => typeof url === 'string');
+}
 
 export interface AccountExport {
   exportedAt: string;
@@ -82,6 +125,8 @@ export async function exportAccount(userId: string): Promise<AccountExport> {
   };
 
   for (const { name, model } of OWNED_VIA_PROFILE) {
+    // Posts are read by userId below instead, which is the wider set.
+    if (name === 'communityPosts') continue;
     data[name] = await model.find({ profileId: { $in: profileIds } }).lean();
   }
 
@@ -156,14 +201,7 @@ export async function deleteAccount(userId: string): Promise<DeletionSummary> {
   const profiles = await Profile.find({ userId }, { _id: 1 }).lean();
   const profileIds = profiles.map((profile) => profile._id);
 
-  const scans = await ScanHistory.find(
-    { profileId: { $in: profileIds }, imageUrl: { $exists: true, $ne: null } },
-    { imageUrl: 1 },
-  ).lean();
-
-  const imageUrls = scans
-    .map((scan) => scan.imageUrl)
-    .filter((url): url is string => typeof url === 'string');
+  const imageUrls = await scanImageUrls(profileIds);
 
   const deleted: Record<string, number> = {};
   let transactional = false;
@@ -171,14 +209,15 @@ export async function deleteAccount(userId: string): Promise<DeletionSummary> {
   const runDeletes = async (session?: mongoose.ClientSession) => {
     const options = session ? { session } : {};
 
-    for (const { name, model } of OWNED_VIA_PROFILE) {
-      const result = await model.deleteMany({ profileId: { $in: profileIds } }, options);
-      deleted[name] = result.deletedCount ?? 0;
-    }
+    // A rolled-back transaction leaves counts from an attempt that deleted
+    // nothing, so the tally starts empty on every pass.
+    for (const key of Object.keys(deleted)) delete deleted[key];
+
+    await deleteProfileScopedData(profileIds, deleted, session);
 
     for (const { name, model } of OWNED_BY_USER) {
       const result = await model.deleteMany({ userId }, options);
-      deleted[name] = result.deletedCount ?? 0;
+      deleted[name] = (deleted[name] ?? 0) + (result.deletedCount ?? 0);
     }
 
     const tokens = await RefreshToken.deleteMany({ userId }, options);
@@ -211,6 +250,67 @@ export async function deleteAccount(userId: string): Promise<DeletionSummary> {
   const imagesRemoved = await purgeCloudinaryImages(imageUrls);
 
   logger.info('Account erased', { userId, deleted, imagesRemoved, transactional });
+
+  return { deleted, imagesRemoved, transactional };
+}
+
+/**
+ * Erases one profile and everything recorded against it.
+ *
+ * Ownership is checked by the caller; this takes ids it has already verified.
+ * Like account erasure it runs in a transaction where the deployment has one,
+ * and removes the profile row last so an interrupted run leaves a profile with
+ * no data rather than data with no profile.
+ */
+export async function deleteProfile(
+  userId: string,
+  profileId: mongoose.Types.ObjectId,
+): Promise<DeletionSummary> {
+  const imageUrls = await scanImageUrls([profileId]);
+
+  const deleted: Record<string, number> = {};
+  let transactional = false;
+
+  const runDeletes = async (session?: mongoose.ClientSession) => {
+    const options = session ? { session } : {};
+
+    for (const key of Object.keys(deleted)) delete deleted[key];
+
+    await deleteProfileScopedData([profileId], deleted, session);
+
+    const profile = await Profile.deleteOne({ _id: profileId, userId }, options);
+    deleted.profiles = profile.deletedCount ?? 0;
+
+    await User.updateOne({ _id: userId }, { $pull: { profiles: profileId } }, options);
+  };
+
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      await runDeletes(session);
+    });
+    transactional = true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const unsupported = /Transaction numbers are only allowed|replica set|not supported/i.test(message);
+
+    if (!unsupported) throw error;
+
+    logger.warn('Transactions unavailable; deleting profile sequentially', { userId });
+    await runDeletes();
+  } finally {
+    await session.endSession();
+  }
+
+  const imagesRemoved = await purgeCloudinaryImages(imageUrls);
+
+  logger.info('Profile deleted', {
+    userId,
+    profileId: profileId.toString(),
+    deleted,
+    imagesRemoved,
+    transactional,
+  });
 
   return { deleted, imagesRemoved, transactional };
 }

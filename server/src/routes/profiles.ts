@@ -6,6 +6,7 @@ import { authenticate } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { objectId, validate } from '../middleware/validate.js';
 import { badRequest, forbidden, notFound } from '../utils/AppError.js';
+import { deleteProfile } from '../services/accountData.js';
 import { env } from '../config/env.js';
 
 const router = Router();
@@ -114,16 +115,14 @@ router.delete('/:id', validate({ params: profileParams }), asyncHandler(async (r
     throw badRequest('This is the only profile on the account.', 'Create another profile first, then delete this one.');
   }
 
-  await Profile.findOneAndDelete({
-    _id: req.params.id,
-    userId: req.jwtUser!.id,
-  });
+  // Deleting the row alone used to leave scans, pantry items, chat sessions,
+  // logs, saved recipes and posts behind with no owner — and account erasure
+  // could not reach them afterwards, because it enumerates the profiles that
+  // still exist. The cascade is shared with that path so the two cannot
+  // diverge again.
+  const summary = await deleteProfile(req.jwtUser!.id, profile._id);
 
-  await User.findByIdAndUpdate(req.jwtUser!.id, {
-    $pull: { profiles: profile._id },
-  });
-
-  res.json({ message: 'Profile deleted' });
+  res.json({ message: 'Profile deleted', deleted: summary.deleted });
 }));
 
 export default router;

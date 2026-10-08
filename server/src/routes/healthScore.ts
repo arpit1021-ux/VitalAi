@@ -8,6 +8,7 @@ import { objectId, validate } from '../middleware/validate.js';
 import { z } from 'zod';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { notFound } from '../utils/AppError.js';
+import { currentStreak, todayKey } from '../utils/streak.js';
 
 const router = Router();
 
@@ -22,7 +23,7 @@ router.get('/:profileId', validate({ params: z.object({ profileId: objectId }) }
     throw notFound('That profile');
   }
 
-  const today = new Date().toISOString().split('T')[0];
+  const today = todayKey();
   const todayLog = await DailyLog.findOne({ profileId: profile._id, date: today });
 
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
@@ -38,20 +39,7 @@ router.get('/:profileId', validate({ params: z.object({ profileId: objectId }) }
     .sort({ date: -1 })
     .lean();
 
-  let streak = 0;
-  if (streakRes.length > 0) {
-    const dates = streakRes.map((l) => l.date);
-    const checkDate = new Date(today + 'T00:00:00Z');
-    for (const dateStr of dates) {
-      const expected = checkDate.toISOString().split('T')[0];
-      if (dateStr === expected) {
-        streak++;
-        checkDate.setDate(checkDate.getDate() - 1);
-      } else {
-        break;
-      }
-    }
-  }
+  const streak = currentStreak(streakRes.map((log) => log.date), today);
 
   const weeklyScans = recentScans.length;
 

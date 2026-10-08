@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Search, Trash2, ScanLine, Pill, FlaskConical, SortAsc } from 'lucide-react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useProfileStore } from '@/stores/profileStore';
 import { scansExtended } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -11,10 +11,11 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Skeleton } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { ErrorState } from '@/components/shared/ErrorState';
-import { SectionBoundary } from '@/components/shared/SectionBoundary';
+import { SectionBoundary, type SectionQuery } from '@/components/shared/SectionBoundary';
 import { VerdictBadge, type Verdict } from '@/components/shared/VerdictBadge';
 import { describeError, type DescribedError } from '@/lib/errors';
 import { rise, stagger, transition, durations } from '@/lib/motion';
+import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 
 interface ScanItem {
   _id: string;
@@ -63,22 +64,42 @@ export default function ScanHistory() {
   const [activeTab, setActiveTab] = useState('all');
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState('newest');
-  const [page, setPage] = useState(1);
+  const settledSearch = useDebouncedValue(search);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [deleteFailure, setDeleteFailure] = useState<{ id: string; error: DescribedError } | null>(null);
 
-  const historyQuery = useQuery<ScanHistoryData>({
-    queryKey: ['scanHistory', activeProfile?._id, activeTab, search, sort, page],
-    queryFn: () =>
+  /**
+   * Paged as an accumulating list, not as a page number in the query key.
+   *
+   * With the page in the key, "Show me more" fetched page two and rendered it
+   * *instead of* page one, so the button silently replaced the list it was
+   * supposed to extend.
+   */
+  const historyQuery = useInfiniteQuery({
+    queryKey: ['scanHistory', activeProfile?._id, activeTab, settledSearch, sort],
+    initialPageParam: 1,
+    queryFn: ({ pageParam }) =>
       scansExtended.getHistoryFiltered(activeProfile!._id, {
         type: activeTab === 'all' ? undefined : activeTab,
-        search: search || undefined,
+        search: settledSearch || undefined,
         sort,
-        page,
+        page: pageParam,
         limit: 10,
-      }).then((r) => r.data),
+      }).then((r) => r.data as ScanHistoryData),
+    getNextPageParam: (lastPage, _pages, lastPageParam) =>
+      hasMorePages(lastPage) ? lastPageParam + 1 : undefined,
     enabled: !!activeProfile,
   });
+
+  // SectionBoundary works from a plain query shape, so the accumulated pages
+  // are flattened into one list before they reach it.
+  const scansSection: SectionQuery<ScanItem[]> = {
+    data: historyQuery.data?.pages.flatMap(toScans),
+    isPending: historyQuery.isPending,
+    isFetching: historyQuery.isFetching,
+    error: historyQuery.error,
+    refetch: historyQuery.refetch,
+  };
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => scansExtended.deleteScan(id),
@@ -120,10 +141,7 @@ export default function ScanHistory() {
             <Input
               placeholder="Search what you've scanned"
               value={search}
-              onChange={(e) => {
-                setSearch(e.target.value);
-                setPage(1);
-              }}
+              onChange={(e) => setSearch(e.target.value)}
               className="pl-10"
               aria-label="Search what you've scanned"
             />
@@ -135,10 +153,7 @@ export default function ScanHistory() {
             />
             <select
               value={sort}
-              onChange={(e) => {
-                setSort(e.target.value);
-                setPage(1);
-              }}
+              onChange={(e) => setSort(e.target.value)}
               className="h-12 w-full appearance-none rounded border-2 border-ink/15 bg-surface pl-10 pr-4 text-body text-ink transition-colors duration-micro ease-entrance hover:border-ink/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary sm:w-auto"
               aria-label="Sort order"
             >
@@ -151,7 +166,7 @@ export default function ScanHistory() {
         {/* Four tabs will not fit 360px in one row, so the strip scrolls
             rather than squeezing each label to nothing. */}
         <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
-          <Tabs value={activeTab} onValueChange={(v) => { setActiveTab(v); setPage(1); }}>
+          <Tabs value={activeTab} onValueChange={setActiveTab}>
             <TabsList className="h-auto bg-sunk p-1">
               <TabsTrigger value="all" className="min-h-[44px] rounded px-4">All</TabsTrigger>
               <TabsTrigger value="food" className="min-h-[44px] rounded px-4">Food</TabsTrigger>
@@ -163,7 +178,7 @@ export default function ScanHistory() {
       </motion.div>
 
       <SectionBoundary
-        query={historyQuery}
+        query={scansSection}
         band="inline"
         skeleton={
           <div className="divide-y divide-line border-y border-line">
@@ -179,7 +194,7 @@ export default function ScanHistory() {
             ))}
           </div>
         }
-        isEmpty={(d) => toScans(d).length === 0}
+        isEmpty={(scans) => scans.length === 0}
         empty={
           <EmptyState
             icon={ScanLine}
@@ -190,7 +205,7 @@ export default function ScanHistory() {
           />
         }
       >
-        {(d) => (
+        {(scans) => (
           <>
             {/* A plain ruled list, not a stack of cards: these are records to
                 read down, not objects to pick up one at a time. */}
@@ -200,7 +215,7 @@ export default function ScanHistory() {
               animate="visible"
               className="divide-y divide-line border-y border-line"
             >
-              {toScans(d).map((scan) => {
+              {scans.map((scan) => {
                 const config = typeConfig[scan.type] || typeConfig.food;
                 const Icon = config.icon;
                 const deletingThis = deleteMutation.isPending && deleteMutation.variables === scan._id;
@@ -277,12 +292,12 @@ export default function ScanHistory() {
               })}
             </motion.ul>
 
-            {hasMorePages(d) && (
+            {historyQuery.hasNextPage && (
               <div className="mt-6 flex justify-center">
                 <Button
                   variant="secondary"
-                  onClick={() => setPage((p) => p + 1)}
-                  loading={historyQuery.isFetching}
+                  onClick={() => historyQuery.fetchNextPage()}
+                  loading={historyQuery.isFetchingNextPage}
                   loadingLabel="Loading…"
                 >
                   Show me more

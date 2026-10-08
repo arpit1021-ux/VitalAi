@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from 'express';
-import { ZodError, type ZodTypeAny, z } from 'zod';
+import { type ZodTypeAny, z } from 'zod';
 
 /**
  * Schema validation at the API boundary.
@@ -33,8 +33,9 @@ export function validate(schemas: ValidationSchemas) {
       if (schemas.body) req.body = schemas.body.parse(req.body);
       next();
     } catch (error) {
-      // The error handler renders ZodError as per-field messages.
-      next(error instanceof ZodError ? error : error);
+      // The error handler renders a ZodError as per-field messages; anything
+      // else falls through to it as an internal failure.
+      next(error);
     }
   };
 }

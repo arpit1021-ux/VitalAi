@@ -1,0 +1,307 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "VitalAI — how one food scan travels through the system",
+    "output": "vitalai-runtime.html",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "primary-path",
+        "label": "The primary path",
+        "focus": [
+          "browser",
+          "gate",
+          "routes",
+          "retrieval",
+          "llm"
+        ],
+        "note": "The top row is one food scan, left to right. Everything underneath is something that row reaches down to and comes straight back from."
+      },
+      {
+        "id": "trust",
+        "label": "Trust boundaries",
+        "focus": [
+          "browser",
+          "gate",
+          "routes"
+        ],
+        "note": "Nothing from the browser is believed. The gate turns an anonymous request into a known user with a budget and a checked body."
+      },
+      {
+        "id": "where-data-lives",
+        "label": "Where data lives",
+        "focus": [
+          "gate",
+          "redis",
+          "routes",
+          "mongo"
+        ],
+        "note": "Two stores, two jobs: records that must outlive the request, and counters that must be shared and short-lived."
+      },
+      {
+        "id": "the-ai-part",
+        "label": "The AI part",
+        "focus": [
+          "retrieval",
+          "pinecone",
+          "llm",
+          "gemini"
+        ],
+        "note": "Retrieval finds real source passages first. The model is only allowed to answer from what retrieval found."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "browser",
+      "type": "external",
+      "label": "Browser",
+      "sublabel": "React app, your phone",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        170,
+        72
+      ],
+      "tag": "untrusted"
+    },
+    {
+      "id": "gate",
+      "type": "security",
+      "label": "The gate",
+      "sublabel": "who · rate · budget",
+      "pos": [
+        310,
+        40
+      ],
+      "size": [
+        170,
+        72
+      ]
+    },
+    {
+      "id": "routes",
+      "type": "backend",
+      "label": "Route handlers",
+      "sublabel": "50 endpoints",
+      "pos": [
+        580,
+        40
+      ],
+      "size": [
+        170,
+        72
+      ]
+    },
+    {
+      "id": "retrieval",
+      "type": "backend",
+      "label": "Retrieval",
+      "sublabel": "words into numbers",
+      "pos": [
+        850,
+        40
+      ],
+      "size": [
+        170,
+        72
+      ]
+    },
+    {
+      "id": "llm",
+      "type": "backend",
+      "label": "LLM gateway",
+      "sublabel": "prompt in, JSON out",
+      "pos": [
+        1120,
+        40
+      ],
+      "size": [
+        170,
+        72
+      ],
+      "tag": "only exit"
+    },
+    {
+      "id": "redis",
+      "type": "database",
+      "label": "Redis",
+      "sublabel": "spend counters",
+      "pos": [
+        310,
+        300
+      ],
+      "size": [
+        170,
+        72
+      ]
+    },
+    {
+      "id": "mongo",
+      "type": "database",
+      "label": "MongoDB Atlas",
+      "sublabel": "profiles, scans",
+      "pos": [
+        580,
+        300
+      ],
+      "size": [
+        170,
+        72
+      ],
+      "tag": "encrypted"
+    },
+    {
+      "id": "pinecone",
+      "type": "external",
+      "label": "Pinecone",
+      "sublabel": "corpus as vectors",
+      "pos": [
+        850,
+        300
+      ],
+      "size": [
+        170,
+        72
+      ]
+    },
+    {
+      "id": "gemini",
+      "type": "external",
+      "label": "Google Gemini",
+      "sublabel": "the model itself",
+      "pos": [
+        1120,
+        300
+      ],
+      "size": [
+        170,
+        72
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "security-group",
+      "label": "Untrusted — anything from here can lie",
+      "wraps": [
+        "browser"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "Trusted server — every API key lives only in here",
+      "wraps": [
+        "gate",
+        "routes",
+        "retrieval",
+        "llm"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "browser-to-gate",
+      "from": "browser",
+      "to": "gate",
+      "label": "HTTPS · same-origin /api",
+      "variant": "emphasis",
+      "labelDy": 55
+    },
+    {
+      "id": "gate-to-routes",
+      "from": "gate",
+      "to": "routes",
+      "label": "known user, checked body",
+      "variant": "emphasis",
+      "labelDy": 55
+    },
+    {
+      "id": "routes-to-retrieval",
+      "from": "routes",
+      "to": "retrieval",
+      "label": "find the sources",
+      "variant": "emphasis",
+      "labelDy": 55
+    },
+    {
+      "id": "retrieval-to-llm",
+      "from": "retrieval",
+      "to": "llm",
+      "label": "top 5 passages",
+      "variant": "emphasis",
+      "labelDy": 55
+    },
+    {
+      "id": "gate-to-redis",
+      "from": "gate",
+      "to": "redis",
+      "label": "can they afford this?",
+      "variant": "security",
+      "labelDy": 80
+    },
+    {
+      "id": "routes-to-mongo",
+      "from": "routes",
+      "to": "mongo",
+      "label": "read / write",
+      "labelDy": 80
+    },
+    {
+      "id": "retrieval-to-pinecone",
+      "from": "retrieval",
+      "to": "pinecone",
+      "label": "nearest by meaning",
+      "labelDy": 80
+    },
+    {
+      "id": "llm-to-gemini",
+      "from": "llm",
+      "to": "gemini",
+      "label": "prompt + photo",
+      "variant": "emphasis",
+      "labelDy": 80
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "One scan, step by step",
+      "items": [
+        "You photograph a label. Vercel forwards /api to the server, same origin.",
+        "The gate asks four things: who, how fast, can they afford it, is the body valid.",
+        "Retrieval turns the question into numbers; Pinecone returns the closest passages.",
+        "Gemini answers as JSON, and the gateway schema-checks it before anyone sees it."
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Trust boundaries",
+      "items": [
+        "A browser can be modified, so nothing it sends is taken on faith.",
+        "Every API key lives inside the trusted box. The browser never gets one.",
+        "Gemini is outside it too: a bad verdict falls back to caution, never to safe."
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Why retrieval comes first",
+      "items": [
+        "Asked cold, a model answers from memory and can invent a medical claim.",
+        "So the question becomes 1536 numbers, matched against a nutrition corpus.",
+        "Your profile is quoted data in the user's turn, never instructions."
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Reading this diagram",
+      "items": [
+        "The top row is the whole story; each box below is what the one above reaches down to.",
+        "Every arrow happens inside one request, while you wait. Nothing here is a background job."
+      ]
+    }
+  ]
+}

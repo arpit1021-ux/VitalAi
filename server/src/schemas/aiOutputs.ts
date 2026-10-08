@@ -14,8 +14,20 @@ import { z } from 'zod';
 const severity = z.enum(['low', 'medium', 'high']).catch('medium');
 const confidence = z.enum(['high', 'medium', 'low']).catch('low');
 
-/** Free text from the model, bounded so a runaway generation cannot be stored whole. */
-const text = (max = 2000) => z.string().max(max).catch('');
+/**
+ * Free text from the model, bounded so a runaway generation cannot be stored
+ * whole.
+ *
+ * Over-long text is truncated rather than discarded: `.max().catch('')` threw
+ * the whole field away, so a summary one character over the bound became an
+ * empty string — an answer silently replaced by nothing, which is worse than a
+ * clipped one. Anything that is not a string still falls back to empty.
+ */
+const text = (max = 2000) =>
+  z.preprocess(
+    (value) => (typeof value === 'string' && value.length > max ? value.slice(0, max) : value),
+    z.string().max(max).catch(''),
+  ) as unknown as z.ZodType<string>;
 
 export const foodVerdictSchema = z.object({
   // The verdict drives a badge the user acts on, so an unrecognised value

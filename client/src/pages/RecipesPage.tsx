@@ -17,6 +17,7 @@ import { describeError, isCancellation } from '@/lib/errors';
 import { Skeleton } from '@/components/ui/skeleton';
 import { rise, stagger, transition, durations } from '@/lib/motion';
 import { cn } from '@/lib/utils';
+import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 
 interface Recipe {
   _id: string;
@@ -61,17 +62,18 @@ export default function RecipesPage() {
   const { activeProfile } = useProfileStore();
   const queryClient = useQueryClient();
   const [search, setSearch] = useState('');
+  const settledSearch = useDebouncedValue(search);
   const [dietFilter, setDietFilter] = useState('all');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [deleteFailure, setDeleteFailure] = useState<{ id: string; error: unknown } | null>(null);
 
   const recipesQuery = useQuery<SavedRecipes>({
-    queryKey: ['savedRecipes', activeProfile?._id, dietFilter, search],
+    queryKey: ['savedRecipes', activeProfile?._id, dietFilter, settledSearch],
     queryFn: () =>
       savedRecipes
         .getAll(activeProfile!._id, {
           diet: dietFilter === 'all' ? undefined : dietFilter,
-          search: search || undefined,
+          search: settledSearch || undefined,
         })
         .then((r) => r.data as SavedRecipes),
     enabled: !!activeProfile,
