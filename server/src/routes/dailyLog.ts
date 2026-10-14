@@ -65,7 +65,7 @@ router.get('/:profileId/today', validate({ params: z.object({ profileId: objectI
     throw notFound('That profile');
   }
 
-  const log = await getOrCreateTodayLog(req.params.profileId);
+  const log = await getOrCreateTodayLog(req.params.profileId as string);
   res.json(log);
 }));
 
@@ -83,7 +83,7 @@ router.put('/:profileId/water', validate({ params: z.object({ profileId: objectI
     throw badRequest('A glass count has to be between 0 and 8.', 'Pick a number in that range.');
   }
 
-  const log = await getOrCreateTodayLog(req.params.profileId);
+  const log = await getOrCreateTodayLog(req.params.profileId as string);
   log.waterCount = count;
   await log.save();
 
@@ -99,7 +99,7 @@ router.post('/:profileId/water/add', validate({ params: z.object({ profileId: ob
     throw notFound('That profile');
   }
 
-  const log = await getOrCreateTodayLog(req.params.profileId);
+  const log = await getOrCreateTodayLog(req.params.profileId as string);
   const goal = log.waterGoal || 8;
   if (log.waterCount < goal) {
     log.waterCount += 1;
@@ -118,7 +118,7 @@ router.post('/:profileId/water/remove', validate({ params: z.object({ profileId:
     throw notFound('That profile');
   }
 
-  const log = await getOrCreateTodayLog(req.params.profileId);
+  const log = await getOrCreateTodayLog(req.params.profileId as string);
   if (log.waterCount > 0) {
     log.waterCount -= 1;
     await log.save();
@@ -141,7 +141,7 @@ router.put('/:profileId/water/goal', validate({ params: z.object({ profileId: ob
     throw badRequest('A daily water goal has to be between 1 and 20 glasses.', 'Pick a number in that range.');
   }
 
-  const log = await getOrCreateTodayLog(req.params.profileId);
+  const log = await getOrCreateTodayLog(req.params.profileId as string);
   log.waterGoal = goal;
   await log.save();
 
@@ -163,7 +163,7 @@ router.put('/:profileId/plate', validate({ params: z.object({ profileId: objectI
     throw badRequest('That is not one of the food groups.', 'Choose vegetables, fruit, protein, grains or dairy.');
   }
 
-  const log = await getOrCreateTodayLog(req.params.profileId);
+  const log = await getOrCreateTodayLog(req.params.profileId as string);
   log.plateGroups[group as keyof typeof log.plateGroups] = value;
 
   if (!log.plateEntries) {
@@ -246,7 +246,7 @@ router.post('/:profileId/activity', validate({ params: z.object({ profileId: obj
     throw notFound('That profile');
   }
 
-  const log = await getOrCreateTodayLog(req.params.profileId);
+  const log = await getOrCreateTodayLog(req.params.profileId as string);
   log.streakDay = true;
   await log.save();
 
