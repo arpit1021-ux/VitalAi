@@ -9,7 +9,7 @@ services:
     runtime: node
     plan: free
     rootDir: server
-    buildCommand: npm ci && npm run build
+    buildCommand: npm ci --include=dev && npm run build
     startCommand: npm start
     # The app already exposes a readiness probe that checks its dependencies,
     # which is stricter than a liveness ping and is what should gate traffic.
