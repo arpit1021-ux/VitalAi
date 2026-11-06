@@ -6,12 +6,10 @@
 
   "rewrites": [
     {
-      "comment": "The API is proxied through this origin rather than called cross-site. Auth cookies are SameSite=Lax, and Lax is what stands in for a CSRF token here — a Lax cookie is not sent on cross-site XHR, so calling the API on its own domain would break every authenticated request. Same-origin also means no CORS preflight at all. Replace the host below with the deployed API; keep the /api suffix on both sides.",
       "source": "/api/:path*",
       "destination": "https://vitalai-api-uwyi.onrender.com/api/:path*"
     },
     {
-      "comment": "SPA fallback. Vercel checks the filesystem before rewrites, so built assets, robots.txt and sitemap.xml still resolve.",
       "source": "/(.*)",
       "destination": "/index.html"
     }
@@ -21,9 +19,18 @@
     {
       "source": "/(.*)",
       "headers": [
-        { "key": "X-Content-Type-Options", "value": "nosniff" },
-        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
-        { "key": "X-Frame-Options", "value": "DENY" },
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "strict-origin-when-cross-origin"
+        },
+        {
+          "key": "X-Frame-Options",
+          "value": "DENY"
+        },
         {
           "key": "Permissions-Policy",
           "value": "camera=(self), microphone=(), geolocation=(), interest-cohort=()"
@@ -34,11 +41,14 @@
         }
       ]
     },
-    
     {
       "source": "/assets/(.*)",
-      "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
     }
-    
   ]
 }
