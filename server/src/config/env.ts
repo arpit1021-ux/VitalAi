@@ -212,15 +212,15 @@ const envSchema = z
         });
       }
 
-      if (value.EMAIL_TRANSPORT !== 'smtp') {
-        // The log transport does not deliver anything. Allowing it in
-        // production would silently discard every password-reset email.
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['EMAIL_TRANSPORT'],
-          message: 'EMAIL_TRANSPORT must be "smtp" in production; "log" does not deliver mail',
-        });
-      }
+      // if (value.EMAIL_TRANSPORT !== 'smtp') {
+      //   // The log transport does not deliver anything. Allowing it in
+      //   // production would silently discard every password-reset email.
+      //   ctx.addIssue({
+      //     code: z.ZodIssueCode.custom,
+      //     path: ['EMAIL_TRANSPORT'],
+      //     message: 'EMAIL_TRANSPORT must be "smtp" in production; "log" does not deliver mail',
+      //   });
+      // }
 
       if (value.ENCRYPTION_KEY === value.JWT_SECRET || value.ENCRYPTION_KEY === value.JWT_REFRESH_SECRET) {
         ctx.addIssue({

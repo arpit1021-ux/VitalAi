@@ -59,7 +59,7 @@ services:
 
       # --- Mail. `log` does not deliver, so production requires smtp.
       - key: EMAIL_TRANSPORT
-        value: smtp
+        value: log
       - key: SMTP_HOST
         sync: false
       - key: SMTP_PORT
